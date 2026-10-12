@@ -1,0 +1,6 @@
+# Port hook points: the recompiled code (and the interpreter in runner.c) calls g_recomp_hook
+# before executing the instruction at each of these addresses, while g_hook_enable is set.
+# Used by widescreen to widen the game's "is this object on screen" tests (see port/src/widescreen.c).
+80B692   # visibility test, left extent:  cmp #$0100
+80B69E   # visibility test, right extent: cmp #$0100
+80E6BF   # despawn distance test:          cmp $34

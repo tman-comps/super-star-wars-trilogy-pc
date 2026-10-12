@@ -1,0 +1,233 @@
+"""Emit ca65 source (one file per 32KB bank) from a trace map.
+
+usage: emit.py rom.sfc map.json outdir [names.txt]
+names.txt:  <pc24> <name>   optional human labels
+"""
+import json
+import os
+import sys
+
+sys.path.insert(0, __file__.rsplit("/", 1)[0])
+from op65816 import OPS  # noqa: E402
+
+ROM = open(sys.argv[1], "rb").read()
+M = json.load(open(sys.argv[2]))
+OUTD = sys.argv[3]
+NAMES = sys.argv[4] if len(sys.argv) > 4 else None
+RAMSYM = sys.argv[5] if len(sys.argv) > 5 else None
+ram = {}
+if RAMSYM:
+    for line in open(RAMSYM):
+        f = line.split("#")[0].split()
+        if len(f) >= 2:
+            ram[int(f[0], 16)] = f[1]
+NB = len(ROM) // 0x8000
+os.makedirs(OUTD, exist_ok=True)
+
+code = {int(k): v for k, v in M["code"].items()}
+SCR = {}
+if os.path.exists(os.path.join(os.path.dirname(sys.argv[2]), "scripts.json")):
+    SCR = {int(k): v for k, v in json.load(open(os.path.join(os.path.dirname(sys.argv[2]), "scripts.json")))["ops"].items()}
+labels = {int(k): v for k, v in M["labels"].items()}
+tables = {int(k): v for k, v in M["tables"].items()}
+
+
+def snes(off):
+    return 0x800000 | ((off // 0x8000) << 16) | 0x8000 | (off % 0x8000)
+
+
+def to_off(a):
+    bank, addr = a >> 16, a & 0xFFFF
+    if bank in (0x7E, 0x7F) or addr < 0x8000:
+        return None
+    b = bank & 0x7F
+    return b * 0x8000 + (addr - 0x8000) if b < NB else None
+
+
+names = {}
+PFX = {"reset": "Reset_Vector", "nmi": "NMI_Vector", "irq": "IRQ_Vector", "cop": "COP_Vector", "brk": "BRK_Vector",
+       "sub": "sub", "long": "lsub", "tbl": "tbl", "loc": "loc", "manual": "ent"}
+for off, kind in labels.items():
+    if off in code:
+        names[off] = f"{PFX.get(kind, 'L')}_{snes(off):06X}" if kind not in ("reset", "nmi", "irq", "cop", "brk") else PFX[kind]
+for off in tables:
+    names.setdefault(off, f"jt_{snes(off):06X}")
+for off, e in SCR.items():
+    for t in e["targets"]:
+        to = to_off(t)
+        if to is not None and to in SCR:
+            names.setdefault(to, f"scr_{snes(to):06X}")
+    if e["native"] is not None:
+        no = to_off(e["native"])
+        if no is not None and no in code:
+            names.setdefault(no, f"nat_{snes(no):06X}")
+if NAMES:
+    for line in open(NAMES):
+        f = line.split("#")[0].split()
+        if len(f) >= 2:
+            o = to_off(int(f[0], 16))
+            if o is not None:
+                names[o] = f[1]
+
+
+def lab(off):
+    return names.get(off)
+
+
+def fmt(off, c):
+    op = ROM[off]
+    mn, mode = OPS[op]
+    n = c["len"]
+    a = int.from_bytes(ROM[off + 1:off + n], "little")
+    pb = c["pb"] << 16
+    h2 = f"${a:02X}"
+    h4 = f"${a:04X}"
+    h6 = f"${a:06X}"
+    if mode in ("imp",):
+        return mn
+    if mode == "acc":
+        return f"{mn} a"
+    if mode in ("immM", "immX"):
+        return f"{mn} #{h2 if n == 2 else h4}"
+    if mode == "imm8":
+        if mn in ("rep", "sep"):
+            return f"{mn} #{h2}"
+        return None
+    if mode == "blk":
+        return None
+    if mode in ("rel", "rel16"):
+        disp = a - 0x100 if (mode == "rel" and a >= 0x80) else a
+        if mode == "rel16" and a >= 0x8000:
+            disp = a - 0x10000
+        t = to_off(pb | ((((off % 0x8000) + 0x8000) + n + disp) & 0xFFFF))
+        if t is not None and lab(t) and t // 0x8000 == off // 0x8000:
+            return f"{mn} {lab(t)}"
+        return None
+    if mn in ("jsr", "jmp") and mode == "abs":
+        t = to_off(pb | a)
+        if t is not None and lab(t) and t // 0x8000 == off // 0x8000:
+            return f"{mn} .loword({lab(t)})"
+        return f"{mn} a:{h4}"
+    if mn in ("jsl", "jml") and mode == "absl":
+        t = to_off(a)
+        if t is not None and lab(t) and snes(t) == a:
+            return f"{mn} f:{lab(t)}"
+        return f"{mn} f:{h6}"
+    tmpl = {
+        "dp": f"{mn} z:{h2}", "dpx": f"{mn} z:{h2},x", "dpy": f"{mn} z:{h2},y",
+        "dpi": f"{mn} ({h2})", "dpxi": f"{mn} ({h2},x)", "dpiy": f"{mn} ({h2}),y",
+        "dpil": f"{mn} [{h2}]", "dpily": f"{mn} [{h2}],y",
+        "abs": f"{mn} a:{h4}", "absx": f"{mn} a:{h4},x", "absy": f"{mn} a:{h4},y",
+        "absl": f"{mn} f:{h6}", "abslx": f"{mn} f:{h6},x",
+        "absi": f"{mn} ({h4})", "absxi": f"{mn} ({h4},x)", "absil": f"jml [{h4}]",
+        "sr": f"{mn} {h2},s", "sriy": f"{mn} ({h2},s),y",
+    }
+    if mn == "pei":
+        return f"pei ({h2})"
+    if mn == "pea":
+        return f"pea {h4}"
+    out = tmpl.get(mode)
+    if out and ram and mode in ("abs", "absx", "absy") and a in ram:
+        out = out.replace(f"a:{h4}", f"a:{ram[a]}")
+    if out and ram and mode in ("dp", "dpx", "dpy") and a in ram:
+        out = out.replace(f"z:{h2}", f"z:{ram[a]}")
+    return out
+
+
+tbytes = {}
+for toff, t in tables.items():
+    w = 3 if t["kind"] == "ltable" else 2
+    for i in range(t["n"]):
+        tbytes[toff + i * w] = (w, t)
+
+total_code = 0
+for b in range(NB):
+    lines = [f"; Super Star Wars (USA) (Rev 1) - bank ${0x80 + b:02X}",
+             "; auto-generated by tools/emit.py -- regenerate rather than hand-edit until split",
+             '.include "common.inc"', '.include "labels.inc"', '.include "ram.inc"', f'.segment "BANK{b:02X}"', ""]
+    off = b * 0x8000
+    end = off + 0x8000
+    curm = curx = None
+    pending = []
+
+    def flush():
+        while pending:
+            chunk = pending[:16]
+            del pending[:16]
+            lines.append("    .byte " + ",".join(f"${v:02X}" for v in chunk))
+
+    while off < end:
+        if off in names:
+            flush()
+            if off in code and labels.get(off) in ("sub", "long", "reset", "nmi", "irq", "tbl", "manual"):
+                lines.append("")
+            lines.append(f"{names[off]}:")
+        if off in code:
+            flush()
+            c = code[off]
+            total_code += c["len"]
+            mn, mode = OPS[ROM[off]]
+            if mode == "immM" and curm != c["m"]:
+                lines.append("    .a8" if c["m"] else "    .a16"); curm = c["m"]
+            if mode == "immX" and curx != c["x"]:
+                lines.append("    .i8" if c["x"] else "    .i16"); curx = c["x"]
+            s = fmt(off, c)
+            raw = ROM[off:off + c["len"]]
+            if s is None:
+                mn, mode = OPS[ROM[off]]
+                s = ".byte " + ",".join(f"${v:02X}" for v in raw) + f"  ; {mn}"
+            lines.append(f"    {s:<34}; {snes(off):06X}")
+            off += c["len"]
+            continue
+        if off in SCR and off not in code:
+            flush()
+            e = SCR[off]
+            raw = ROM[off:off + e["len"]]
+            vm = e["vm"]
+            parts = [f"${raw[0]:02X}"]
+            body = raw[1:]
+            tl = [to_off(t) for t in e["targets"]]
+            if e["name"] == "jrand":
+                parts += [f".loword({names[t]})" if t in names and t // 0x8000 == off // 0x8000 else f"${int.from_bytes(body[2*i:2*i+2], 'little'):04X}" for i, t in enumerate(tl)]
+                lines.append(f"    .byte {parts[0]}\n    .word " + ", ".join(parts[1:]) + f"  ; VM{vm} {e['name']}")
+            elif tl and tl[0] in names and tl[0] // 0x8000 == off // 0x8000 and e["name"] != "record":
+                rest = body[2:]
+                line = f"    .byte {parts[0]}\n    .word .loword({names[tl[0]]})"
+                if rest:
+                    line += "\n    .byte " + ",".join(f"${v:02X}" for v in rest)
+                lines.append(line + f"  ; VM{vm} {e['name']}")
+            elif e["native"] is not None and to_off(e["native"]) in names and len(raw) == 4 and snes(to_off(e["native"])) == e["native"]:
+                lines.append(f"    .byte {parts[0]}\n    .faraddr {names[to_off(e['native'])]}  ; VM{vm} {e['name']}")
+            elif e["native"] is not None and to_off(e["native"]) in names and len(raw) == 3 and to_off(e["native"]) // 0x8000 == 0:
+                lines.append(f"    .byte {parts[0]}\n    .word .loword({names[to_off(e['native'])]})  ; VM{vm} {e['name']}")
+            else:
+                lines.append("    .byte " + ",".join(f"${v:02X}" for v in raw) + f"  ; VM{vm} {e['name']}")
+            off += e["len"]
+            continue
+        if off in tbytes:
+            flush()
+            w, t = tbytes[off]
+            v = int.from_bytes(ROM[off:off + w], "little")
+            tgt = to_off(v if w == 3 else (t["pb"] << 16) | v)
+            if tgt is not None and tgt in names:
+                if w == 2:
+                    lines.append(f"    .word .loword({names[tgt]})")
+                else:
+                    lines.append(f"    .faraddr {names[tgt]}" if snes(tgt) == v else f"    .faraddr ${v:06X}")
+            else:
+                lines.append(f"    .word ${v:04X}" if w == 2 else f"    .faraddr ${v:06X}")
+            off += w
+            continue
+        pending.append(ROM[off])
+        off += 1
+        if len(pending) >= 16:
+            flush()
+    flush()
+    open(os.path.join(OUTD, f"bank{0x80 + b:02X}.s"), "w").write("\n".join(lines) + "\n")
+open(os.path.join(OUTD, "..", "include", "ram.inc"), "w").write(
+    "; generated from sym/ram.txt\n" + "".join(f"{n} = ${a:04X}\n" for a, n in sorted(ram.items())))
+used = sorted(set(names.values()))
+open(os.path.join(OUTD, "..", "include", "labels.inc"), "w").write(
+    "; generated: every label is global so banks can reference each other\n" +
+    "\n".join(f".global {n}" for n in used) + "\n")
+print("code bytes emitted:", total_code)

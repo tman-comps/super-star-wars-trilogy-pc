@@ -1,0 +1,106 @@
+# =========================================================
+#  NEVER COMMIT ANYTHING FROM THE ORIGINAL CARTRIDGES
+# =========================================================
+
+# ROM files (any SNES dump format)
+*.sfc
+*.smc
+*.swc
+*.fig
+*.bin
+*.rom
+*.zip
+*.7z
+
+# Anything extracted from a ROM (graphics, music, levels, text)
+assets/
+extracted/
+data/rom/
+*.bps
+*.ips
+
+# Save files / save states created while testing
+*.srm
+*.sav
+*.state
+saves/
+
+# Personal config
+config.ini
+settings.ini
+
+# =========================================================
+#  Build output
+# =========================================================
+build/
+out/
+bin/
+obj/
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.obj
+*.o
+*.lib
+*.a
+
+# =========================================================
+#  Editor / OS clutter
+# =========================================================
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# =========================================================
+#  This project: things generated from the ROMs
+# =========================================================
+# Recompiled game code -- created from YOUR ROM by `make gen`, never committed
+gen/
+gen_esb/
+gen_*/
+# Disassembly listings (tools/emit.py output) rebuild the ROM byte for byte
+disasm/
+bank*.s
+*.cdl
+coverage*/
+# The game font the menus capture from your ROM, MSU-1 audio packs
+*.pcm
+*.msu
+roms/
+
+# Files the game writes next to the exe while playing
+*.ini
+*_times.txt
+*_stats.txt
+*_achievements.txt
+*_log.txt
+*_crash.txt
+*_report.txt
+unmapped.txt
+vram.bin
+wram.bin
+achtest_*
+
+# Build output of this Makefile (Linux binaries have no extension)
+build-*/
+/ssw
+/esb
+/ssw_solo
+/ssw_launcher
+/ssw_test
+/ssw_*
+/esb_*
+third_party/SDL2-mingw/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Personal notes that are not part of the project
+GITHUB_GUIDE.md

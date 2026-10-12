@@ -1,0 +1,7 @@
+# Port hook points: the recompiled code (and the interpreter in runner.c) calls g_recomp_hook
+# before executing the instruction at each of these addresses, while g_hook_enable is set.
+# Used by widescreen to widen the game's "is this object on screen" tests (see port/src/widescreen.c).
+# Same engine code as Super Star Wars' 80B692 / 80B69E / 80E6BF (matched with tools/xmatch.py).
+80A559   # visibility test, left extent:  cmp #$0100
+80A565   # visibility test, right extent: cmp #$0100
+80DF0A   # despawn distance test:          cmp $48

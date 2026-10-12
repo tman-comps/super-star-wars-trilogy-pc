@@ -1,0 +1,8 @@
+# code/data labels:  <snes address> <name>   (Super Empire Strikes Back, USA Rev 1)
+808E27 Seq_AdvanceScene      # look up (mode,scene) in Seq_Table, enter the next mode
+808D4E Seq_Table             # 4-byte rows: cur mode, cur scene (FF=any), next mode, next scene; FF-terminated
+80CA01 ScriptVM_Next         # VM0 (objects): sep #$30, iny, lda [$5F],y, jmp ($C90B,x)
+80C90B ScriptVM_OpTable
+819027 SpawnVM_Next          # VM1 (spawn lists)
+818D72 SpawnVM_OpTable
+818359 VM2_Next              # third script VM (to identify)

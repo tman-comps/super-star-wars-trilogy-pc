@@ -1,0 +1,36 @@
+# WRAM symbols: <address> <name>
+# --- game flow
+0368 SceneID
+04DA GameMode
+04DC ModeFrameCounter
+04DE ModeSubState
+005A INIDISP_Shadow
+# --- player / HUD
+08FB Lives
+096F StageTimer          # seconds, shown as TIME
+0880 DeathTimer          # nonzero while the death sequence plays (vehicle stages)
+09A3 BossSlot            # object slot of the boss shown in the HUD bar (0 = none)
+09A5 BossBarValue
+09A7 BossBarMax
+# --- object table (indexed by slot*2; slot 0 = player)
+0A79 ObjHP
+0B91 ObjScriptPtr        # VM0 script pointer (low 16 bits; bank in $4D)
+0BE1 ObjScriptLoopPtr
+0C09 ObjScriptLoopCount
+0C31 ObjScriptReturn
+0C59 ObjScriptWait
+0F51 ObjX
+0FC9 ObjY
+1131 ObjSpawnId
+1159 ObjFlags
+# --- script VMs
+004B ScriptPtr           # 24-bit pointer used by both script VMs
+003E NativeCallPtr       # 24-bit target for script native calls
+0100 CheatLock             # $D342 once a cheat has been entered
+010C CheatUltimate
+010E CheatStageClear
+0110 CheatFlags            # $40 lightsaber start, $80 hero select every stage
+0114 CheatContinues
+1991 Pad1New               # newly pressed buttons, controller 1
+1993 Pad2                  # controller 2
+0876 DebugMenuArea

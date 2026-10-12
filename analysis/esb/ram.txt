@@ -1,0 +1,8 @@
+# WRAM symbols: <address> <name>   (Super Empire Strikes Back)
+01B6 GameMode
+01B8 SceneID
+01AC Lives
+01AE MaxHP
+01D8 DebugActor
+0B1E Checkpoint
+0CF6 ObjHP                   # 2 bytes per object slot, slot 0 = player

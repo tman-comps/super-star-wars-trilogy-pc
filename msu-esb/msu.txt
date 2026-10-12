@@ -1,0 +1,22 @@
+# Super Empire Strikes Back port: song -> MSU-1 track number
+# format:  <module hex> <track hex> <MSU track number>   # where it first plays
+# The PCM for track N is any file in this folder ending in "-N.pcm" (e.g. sesb-5.pcm).
+# Renumber the third column to match whichever MSU-1 pack you use. Songs the game plays
+# that are missing here get logged to unmapped.txt so you can add them.
+2F 0F  1   # LucasArts logo / title
+2F 10  2   # title screen
+08 04  3   # title / intro sequence
+02 01  4   # opening crawl
+18 0C  5   # Hoth: stage start
+04 02  6   # Hoth
+0C 06  7   # Wampa cave
+06 03  8   # snowspeeder mission
+08 00  9   # Echo Base escape (Han)
+04 00 10   # hangar
+0A 05 11   # Dagobah
+0E 07 12   # Bespin
+0E 00 13   # Bespin (second theme)
+12 09 14   # cutscene
+14 0A 15   # cutscene
+1C 0E 16   # cutscene
+16 0B 17   # cutscene
