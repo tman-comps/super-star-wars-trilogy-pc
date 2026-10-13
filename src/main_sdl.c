@@ -31,6 +31,7 @@
 #include "recomp_rt.h"
 #include "cart.h"
 #include "ppu.h"
+#include "dma.h"
 
 #define SAMPLE_RATE 48000
 
@@ -44,7 +45,7 @@ static char g_ini_path[1024], g_state_path[1024], g_cont_path[1024];
 
 // ---------------------------------------------------------------- settings
 enum { ASPECT_4_3, ASPECT_8_7, ASPECT_STRETCH, ASPECT_COUNT };
-static const char* k_aspect_names[] = {"4:3 (TV)", "8:7 (square pixels)", "Stretch"};
+static const char* k_aspect_names[] = {"4:3 (TV)", "8:7 square", "Stretch"};
 enum { WIDE_OFF, WIDE_16_10, WIDE_16_9, WIDE_21_9, WIDE_COUNT };
 static const char* k_wide_names[] = {"Off", "16:10", "16:9", "21:9"};
 static struct {
@@ -68,7 +69,8 @@ static struct {
   int wide_spawn; // widescreen enemies: 0 = shown and active in the wide view (spawning as the original),
                   // 1 = also spawn at the wide view's edge, 2 = like the original (only the 4:3 view counts)
   int pause_menu; // Start during a stage opens the port's pause menu (0 = the game's own plain pause)
-} cfg = {ASPECT_4_3, 0, 0, 80, 0, 0, 0, 0, WIDE_OFF, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 100, 0, 0, 1, 0, 0, 1};
+  int m7_damage;  // damage taken in the speeder and flight (Mode 7) stages: 1 = half, 0 = the original's
+} cfg = {ASPECT_4_3, 0, 0, 80, 0, 0, 0, 0, WIDE_OFF, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 100, 0, 0, 1, 0, 0, 1, 1};
 static const char* k_m7_names[] = {"Original", "High (2x)", "Ultra (4x)"};
 static int g_msu_songs;    // songs mapped in msu/msu.txt (0 = no pack installed)
 
@@ -101,6 +103,7 @@ static void cfg_load(void) {
     else if (!strcmp(k, "colour")) cfg.color = v < 0 ? 0 : v > 2 ? 2 : v;
     else if (!strcmp(k, "speedrun_timer")) cfg.timer = !!v;
     else if (!strcmp(k, "rewind")) cfg.rewind = !!v;
+    else if (!strcmp(k, "speeder_damage_half")) cfg.m7_damage = !!v;
     else if (!strcmp(k, "trilogy_continue")) cfg.trilogy = !!v;
     else if (!strcmp(k, "last_game")) cfg.last_game = v;
     else if (!strcmp(k, "widescreen_spawning")) cfg.wide_spawn = v < 0 || v > 2 ? 0 : v;
@@ -116,7 +119,7 @@ static void cfg_save(void) {
   if (!f) return;
   fprintf(f, "aspect=%d\ninteger_scale=%d\nfullscreen=%d\nvolume=%d\nsmooth=%d\nlightsaber_start=%d\nhero_select=%d\nwidescreen=%d\nextras_unlocked=%d\n",
           cfg.aspect, cfg.integer_scale, cfg.fullscreen, cfg.volume, cfg.smooth, cfg.saber, cfg.hero, cfg.wide, cfg.unlocked);
-  fprintf(f, "remove_slowdown=%d\norchestral_music=%d\nmode7_detail=%d\nrestored_stage=%d\nrumble=%d\ncrt=%d\nno_sprite_flicker=%d\nsound_interpolation=%d\ncolour=%d\nmusic_volume=%d\nspeedrun_timer=%d\nrewind=%d\n", cfg.no_slowdown, cfg.msu, cfg.m7, cfg.restored, cfg.rumble, cfg.crt, cfg.nolimit, cfg.interp, cfg.color, cfg.music_vol, cfg.timer, cfg.rewind);
+  fprintf(f, "remove_slowdown=%d\norchestral_music=%d\nmode7_detail=%d\nrestored_stage=%d\nrumble=%d\ncrt=%d\nno_sprite_flicker=%d\nsound_interpolation=%d\ncolour=%d\nmusic_volume=%d\nspeedrun_timer=%d\nrewind=%d\nspeeder_damage_half=%d\n", cfg.no_slowdown, cfg.msu, cfg.m7, cfg.restored, cfg.rumble, cfg.crt, cfg.nolimit, cfg.interp, cfg.color, cfg.music_vol, cfg.timer, cfg.rewind, cfg.m7_damage);
   fprintf(f, "trilogy_continue=%d\nlast_game=%d\nwidescreen_spawning=%d\npause_menu=%d\n", cfg.trilogy, cfg.last_game, cfg.wide_spawn, cfg.pause_menu);
   for (int i = 0; i < 12; i++) fprintf(f, "key_%d=%d\npad_%d=%d\n", i, (int)g_keymap[i], i, g_padmap[i]);
   fclose(f);
@@ -133,8 +136,9 @@ static void set_btn(int b, bool down) {
     else g_btn_release |= 1 << b;            // not seen by the game yet: release after next frame
   }
 }
+static uint16_t g_btn_inject;   // pressed for the game by the port (the pause menu's Start), see stage_menu_tick
 static void push_buttons(void) {
-  uint16_t b = g_btn_down;
+  uint16_t b = g_btn_down | g_btn_inject;
   for (int i = 0; i < 12; i++) snes_setButtonState(g_snes, 1, i, (b >> i) & 1);
   g_btn_seen = g_btn_down;
 }
@@ -239,12 +243,16 @@ static void update_title(void) {
 }
 static void apply_fullscreen(void) { SDL_SetWindowFullscreen(g_win, cfg.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0); }
 
+static int sp_saved_state(uint8_t* out);   // the game before the pause menu paused it, or 0
+static void damage_forget(void);   // see damage_tick
 static void save_state_file(void) {
-  g_state_len = snes_saveState(g_snes, g_state);
+  g_state_len = sp_saved_state(g_state);
+  if (!g_state_len) g_state_len = snes_saveState(g_snes, g_state);
   FILE* f = fopen(g_state_path, "wb");
   if (f) { fwrite(g_state, 1, g_state_len, f); fclose(f); }
 }
 static void load_state_file(void) {
+  damage_forget();
   crashlog_event("load state");
   FILE* f = fopen(g_state_path, "rb");
   if (f) { g_state_len = (int)fread(g_state, 1, 4 * 1024 * 1024, f); fclose(f); }
@@ -277,6 +285,7 @@ static void autosave_tick(void) {
 // quick restart: the continue file is written 2 s into every stage, so it is the current stage's start
 static int restart_available(void) { int st = stage_number(); return st && st == g_cont_stage; }
 static void cont_load(void) {
+  damage_forget();
   crashlog_event("continue / restart stage");
   FILE* f = fopen(g_cont_path, "rb");
   if (!f) return;
@@ -381,6 +390,7 @@ static void rewind_record(void) {
   if (g_rw_count < RW_SLOTS) g_rw_count++;
 }
 static bool rewind_step(void) {   // load the previous snapshot; false when the buffer is empty
+  damage_forget();
   if (g_rw_count <= 1) return false;
   g_rw_head = (g_rw_head + RW_SLOTS - 1) % RW_SLOTS; g_rw_count--;
   int i = (g_rw_head + RW_SLOTS - 1) % RW_SLOTS;
@@ -430,7 +440,10 @@ static void title_credit(uint32_t* buf, int stride, int x0, int y0, int scale) {
 
 // ---------------------------------------------------------------- rumble
 static bool g_menu;
-static int g_tm_return;            // menu opened from the title screen's PC SETTINGS / ACHIEVEMENTS
+static bool g_menu_bg3;            // the open menu is drawn by the game itself (its BG3 text), not over the picture
+#define MENU_OVERLAY (g_menu && !g_menu_bg3)
+static int g_om_on;                // the game's GAME OPTION MENU is on screen (option_menu_tick)
+static int g_om_return;            // menu opened from the option screen's PC SETTINGS / ACHIEVEMENTS
 static void open_menu(bool open);
 static void rumble(uint16_t lo, uint16_t hi, uint32_t ms) {
   for (int i = 0; i < SDL_NumJoysticks(); i++) {
@@ -450,13 +463,74 @@ static void rumble_tick(void) {
   }
   last_hp = play ? hp : -1; last_lives = play ? lives : -1;
 }
+// Remove slowdown. The side-scrolling stages run a game step every frame on the console unless busy, so
+// the faster CPU just removes the dips. The Mode 7 stages (speeders, flights) are always busy: a step
+// takes 3-5 frames there, and the stages were balanced at that speed -- with the faster CPU all the time
+// they ran up to 3x faster (playtest of build 13: twice the damage on the landspeeder), and even held to
+// the usual pace they stayed as dangerous, because the NMI then finds a finished step every frame
+// instead of once a step. So there the CPU runs at the console's speed and is only made faster for a
+// step that is running late: from the last frame of the stage's usual pace (GameDef.paces, or measured
+// over its first steps) until the step is done. The game behaves as on the console, without the dips
+// (landspeeder, same random input: 65 damage a minute on the console, 80 with this, 160 before).
+// Boot and loaders keep the real CPU timing.
+static int g_pace;                  // the stage's usual frames per step (0 = not known yet)
+static int g_pace_since, g_pace_flag_was;
+static int g_pace_key = -1, g_pace_cal[16], g_pace_cal_n, g_pace_cal_since;
 static void update_overclock(void) {
   extern int g_snes_overclock;
-  // only in the side-scrolling stages: boot and some loaders rely on real CPU timing, and the Mode 7
-  // stages (speeders, flights) were balanced at the speed they run on the console -- sped up, enemies
-  // and shots come about twice as fast (playtest of build 13: the landspeeder took twice the damage)
-  g_snes_overclock = cfg.no_slowdown && in_stage();
+  uint8_t* ram = g_snes->ram;
+  int mode = game_mode(ram), key = mode << 8 | game_scene(ram);
+  if (!cfg.no_slowdown || !game_is_play_mode(mode)) { g_snes_overclock = 0; g_pace = 0; g_pace_key = -1; return; }
+  if (mode == 0x0004) { g_snes_overclock = 1; g_pace = 0; return; }
+  if (!g_game->r_step_flag) { g_snes_overclock = 0; return; }
+  if (key != g_pace_key) {   // a new stage: its pace from the table, else measure it first (at the console's speed)
+    g_pace_key = key; g_pace = 0; g_pace_cal_n = 0; g_pace_cal_since = -1; memset(g_pace_cal, 0, sizeof g_pace_cal);
+    for (int i = 0; g_game->paces && g_game->paces[i][0]; i++)
+      if (g_game->paces[i][0] == mode && g_game->paces[i][1] == game_scene(ram)) g_pace = g_game->paces[i][2];
+    if (g_pace) crashlog_event("pace %d frames per step (table)", g_pace);
+    g_snes_overclock = 0; g_pace_since = 0;
+  }
+  // otherwise pace_tick decides, frame by frame
 }
+// once per frame after vblank (runner hook): measure the pace, or speed up a late step
+static void pace_tick(void) {
+  extern int g_snes_overclock;
+  if (g_pace_key < 0 || !g_game->r_step_flag) return;
+  uint8_t* f = &g_snes->ram[g_game->r_step_flag];
+  bool step = g_pace_flag_was && !*f;   // the NMI has just taken a finished step's sprites
+  if (!g_pace) {   // measuring at the console's speed: the most common interval of 48 steps (after 16)
+    if (g_pace_cal_since >= 0) g_pace_cal_since++;
+    if (step) {
+      if (g_pace_cal_since > 0 && g_pace_cal_since < 16 && ++g_pace_cal_n > 16) g_pace_cal[g_pace_cal_since]++;
+      g_pace_cal_since = 0;
+      if (g_pace_cal_n >= 64) {
+        int best = 1; for (int i = 1; i < 16; i++) if (g_pace_cal[i] > g_pace_cal[best]) best = i;
+        g_pace = best; crashlog_event("pace %d frames per step (measured)", g_pace);
+      }
+    }
+    return;
+  }
+  if (step) g_pace_since = 0; else g_pace_since++;
+  g_snes_overclock = g_pace_since >= g_pace - 1;   // frame g_pace of the step (or later): finish it now
+}
+// Speeder damage: in the Mode 7 stages (speeders, flights) half of every hit is given back, after the
+// frame the game took it in (a hit that ends a life isn't touched). Odd amounts carry over, so two
+// 1-point hits cost 1. g_hp_last is forgotten whenever the game state jumps (state load, rewind, reset).
+static int g_hp_last = -1, g_hp_carry;
+static void damage_forget(void) { g_hp_last = -1; g_hp_carry = 0; }
+static void damage_tick(void) {
+  uint8_t* ram = g_snes->ram;
+  int mode = game_mode(ram);
+  if (!cfg.m7_damage || mode == 0x0004 || !game_is_play_mode(mode)) { damage_forget(); return; }
+  int hp = ram[g_game->r_hp];
+  if (g_hp_last > 0 && hp > 0 && hp < g_hp_last) {
+    int total = g_hp_carry + (g_hp_last - hp), taken = total / 2;
+    g_hp_carry = total - 2 * taken;
+    ram[g_game->r_hp] = (uint8_t)(g_hp_last - taken);
+  }
+  g_hp_last = ram[g_game->r_hp];
+}
+static void pace_after_frame(void) { if (g_game->r_step_flag) g_pace_flag_was = g_snes->ram[g_game->r_step_flag] != 0; }
 
 // ---------------------------------------------------------------- menu overlay (drawn into the 512x480 frame)
 static int g_ach_screen;          // achievements list shown inside the menu
@@ -464,7 +538,7 @@ static int g_ach_sel;
 static int g_toast_id = -1, g_toast_timer;
 static int g_sel;
 static bool g_quit;
-enum { M_RESUME, M_ACH, M_STATS, M_TIMER, M_REWIND, M_CONTROLS, M_CONTINUE, M_RESTART, M_WIDE, M_M7, M_SLOW, M_MUSIC, M_RESTORED, M_RUMBLE, M_ASPECT, M_INTEGER, M_SMOOTH, M_CRT, M_COLOR, M_NOLIMIT, M_FULL, M_VOLUME, M_MUSICVOL, M_INTERP, M_SABER, M_HERO, M_DEV, M_LEVEL, M_CLEAR, M_SAVE, M_LOAD, M_REPORT, M_RESET, M_QUIT, M_GAME, M_TRILOGY, M_SPAWN, M_TITLE, M_PAUSEBTN,
+enum { M_RESUME, M_ACH, M_STATS, M_TIMER, M_REWIND, M_CONTROLS, M_CONTINUE, M_RESTART, M_WIDE, M_M7, M_SLOW, M_MUSIC, M_RESTORED, M_RUMBLE, M_ASPECT, M_INTEGER, M_SMOOTH, M_CRT, M_COLOR, M_NOLIMIT, M_FULL, M_VOLUME, M_MUSICVOL, M_INTERP, M_SABER, M_HERO, M_DEV, M_LEVEL, M_CLEAR, M_SAVE, M_LOAD, M_REPORT, M_RESET, M_QUIT, M_GAME, M_TRILOGY, M_SPAWN, M_TITLE, M_PAUSEBTN, M_M7DMG,
        M_PG_VIDEO, M_PG_AUDIO, M_PG_GAME, M_PG_EXTRAS, M_PG_OPTIONS, M_COUNT };
 // menu pages: lists of item ids, -1 terminated. Built per game (build_pages): items for features a game
 // doesn't have yet are left out.
@@ -474,14 +548,14 @@ static const int k_pg_main_all[] = {M_RESUME, M_RESTART, M_CONTINUE, M_PG_OPTION
 static const int k_pg_options_all[] = {M_GAME, M_PG_VIDEO, M_PG_AUDIO, M_PG_GAME, M_CONTROLS, M_PG_EXTRAS, M_REPORT, -1};
 static const int k_pg_video_all[] = {M_WIDE, M_SPAWN, M_M7, M_ASPECT, M_INTEGER, M_SMOOTH, M_CRT, M_COLOR, M_NOLIMIT, M_FULL, -1};
 static const int k_pg_audio_all[] = {M_VOLUME, M_MUSIC, M_MUSICVOL, M_INTERP, -1};
-static const int k_pg_game_all[] = {M_SLOW, M_TIMER, M_REWIND, M_RUMBLE, M_PAUSEBTN, M_RESTORED, M_TRILOGY, -1};
+static const int k_pg_game_all[] = {M_SLOW, M_M7DMG, M_TIMER, M_REWIND, M_RUMBLE, M_PAUSEBTN, M_RESTORED, M_TRILOGY, -1};
 static const int k_pg_extras_all[] = {M_SABER, M_HERO, M_LEVEL, M_CLEAR, M_DEV, -1};
 #define NPAGES 6
 static const int* const k_pages_all[NPAGES] = {k_pg_main_all, k_pg_video_all, k_pg_audio_all, k_pg_game_all, k_pg_extras_all, k_pg_options_all};
 static int k_pages_buf[NPAGES][24];
 static const int* k_pages[NPAGES] = {k_pages_buf[0], k_pages_buf[1], k_pages_buf[2], k_pages_buf[3], k_pages_buf[4], k_pages_buf[5]};
 static const int* const k_pg_main = k_pages_buf[0];
-static const char* k_page_titles[NPAGES] = {"SUPER STAR WARS", "VIDEO", "AUDIO", "GAMEPLAY", "EXTRAS", "OPTIONS"};
+static const char* k_page_titles[NPAGES] = {"SUPER STAR WARS", "VIDEO OPTIONS", "AUDIO OPTIONS", "GAMEPLAY OPTIONS", "EXTRAS", "PORT SETTINGS"};
 static int g_games_avail;          // how many of the trilogy's ROMs were found
 static const GameDef* g_switch_to; // set by the menu / the ending: switch games at the top of the next frame
 static const GameDef* next_game(int dir);
@@ -567,11 +641,17 @@ static int ui_glyph_row(int ch, int row) {   // emboldened 8x8 row, bit 7 = left
 static const char* ui_clean(const char* in);
 static int ui_text_w(const char* s, int scale) { return (int)strlen(ui_clean(s)) * 8 * scale; }
 // The game's own font: the title screen's 2bpp letter tiles (VRAM $3000, tiles $180-$1DF) and its
-// palette 2, captured from the player's ROM (see font_capture) and cached in ssw_font.bin. Menu text
+// palette 2, captured from the player's ROM (see font_capture) and cached in <game>_font.bin. Menu text
 // is drawn with these glyphs; colour variants recolour the two lit shades, keeping the game's
 // dark outline. Characters the game has no glyph for fall back to the 8x8 font.
 static uint8_t g_gfont[96 * 16];     // tiles $180..$1DF, 16 bytes each (2bpp)
-static uint16_t g_gpal[4];
+static const GameDef* g_font_game;   // the game the captured font comes from (tile numbers of its menu pieces)
+// BG3 palettes 0-3 of the title and option screens (the same in both games; not captured, because the
+// game fades them in): 0 green (values), 1 blue (boxes, unavailable items), 2 gold (labels, headings),
+// 3 grey/white (dot cursor, blinking selection).
+enum { PAL_GREEN, PAL_BOX, PAL_GOLD, PAL_WHITE, PAL_OFF = PAL_BOX };   // unavailable items: blue, like the boxes
+static const uint16_t g_gpal[16] = {0x0000, 0x0000, 0x07E1, 0x6BF2, 0x2000, 0x5C00, 0x79E6, 0x7F75,
+                                    0x2000, 0x0000, 0x021F, 0x539F, 0x2000, 0x0000, 0x4210, 0x7FFF};
 static bool g_gfont_ok;
 static int gfont_tile(int c) {
   if (c >= 'a' && c <= 'z') c -= 32;
@@ -643,7 +723,6 @@ static void ui_text_ex(int x, int y, const char* s, uint32_t top, uint32_t bot, 
 }
 static void font_from_vram(Snes* sn) {   // when the title screen's text is in VRAM
   for (int i = 0; i < 96 * 8; i++) { uint16_t w = sn->ppu->vram[(g_game->font_vram + g_game->font_base * 8 + i) & 0x7fff]; g_gfont[2 * i] = w & 0xff; g_gfont[2 * i + 1] = w >> 8; }
-  for (int i = 0; i < 4; i++) g_gpal[i] = sn->ppu->cgram[8 + i];
   g_gfont_ok = true;
 }
 static bool title_text_ready(Snes* sn) {
@@ -653,10 +732,11 @@ static bool title_text_ready(Snes* sn) {
 }
 // load the cached font, or boot a hidden copy of the game to its title screen and take it from there
 static void font_capture(const uint8_t* rom, int len, const char* dir) {
-  char path[1200]; snprintf(path, sizeof path, "%sssw_font.bin", dir);
+  char path[1200]; snprintf(path, sizeof path, "%s%s_font.bin", dir, g_game->key);
+  g_font_game = g_game;
   FILE* f = fopen(path, "rb");
   if (f) {
-    bool ok = fread(g_gfont, 1, sizeof g_gfont, f) == sizeof g_gfont && fread(g_gpal, 2, 4, f) == 4;
+    bool ok = fread(g_gfont, 1, sizeof g_gfont, f) == sizeof g_gfont;
     fclose(f);
     if (ok && g_gfont[(0x19A - 0x180) * 16 + 2]) { g_gfont_ok = true; return; }
   }
@@ -666,118 +746,197 @@ static void font_capture(const uint8_t* rom, int len, const char* dir) {
   if (title_text_ready(h)) {
     font_from_vram(h);
     f = fopen(path, "wb");
-    if (f) { fwrite(g_gfont, 1, sizeof g_gfont, f); fwrite(g_gpal, 2, 4, f); fclose(f); }
+    if (f) { fwrite(g_gfont, 1, sizeof g_gfont, f); fclose(f); }
   }
   snes_free(h);
 }
 static void ui_text(int x, int y, const char* s, uint32_t c) { ui_text_ex(x, y, s, c, ui_mix(c, 0x000000, 1, 4), 1); }
 static void ui_text_r(int xr, int y, const char* s, uint32_t c) { ui_text(xr - ui_text_w(s, 1), y, s, c); }
-static void ui_title(int y, const char* s) {
-  int sc = ui_text_w(s, 2) <= 210 ? 2 : 1;
-  ui_text_ex(128 - ui_text_w(s, sc) / 2, y, s, 0xfff2a0, 0xe86a10, sc);
-}
-static void ui_backdrop(void) {   // darken the game picture under the menu
-  uint32_t* p = ui_buf();
-  for (int i = 0; i < 512 * 480; i++) { uint32_t c = p[i]; p[i] = (c >> 2) & 0x3f3f3f; }
-}
-static void ui_panel(int x, int y, int w, int h) {
-  for (int j = 0; j < h; j++) for (int i = 0; i < w; i++) {
-    bool cut = (i + j < 3) || (w - 1 - i + j < 3) || (i + h - 1 - j < 3) || (w - 1 - i + h - 1 - j < 3);   // bevelled corners
-    if (cut) continue;
-    int edge = i < j ? i : j;
-    int e2 = (w - 1 - i) < (h - 1 - j) ? (w - 1 - i) : (h - 1 - j);
-    if (e2 < edge) edge = e2;
-    if (edge == 0) ui_px(x + i, y + j, 0x02040c);
-    else if (edge <= 2) ui_px(x + i, y + j, ui_mix(0xa8d8ff, 0x1c48c8, j, h));          // bright blue frame
-    else if (edge == 3) ui_px(x + i, y + j, 0x08143a);
-    else ui_blend(x + i, y + j, ui_mix(0x0c1c4c, 0x040a1c, j, h), 220);                 // deep blue body
+// ---------------------------------------------------------------- the game's own menu look
+// Everything the menus draw comes from the game's GAME OPTION MENU screen: its blue boxes (font tiles
+// $1D7 side, $1D8 corner, $1D9 edge), the underline under a heading ($1D5), the title menu's dot cursor
+// ($1DA), gold labels, green values, and the selected value blinking white. Positions are on the 8-pixel
+// tile grid, like the game's own text. Tile numbers below are offsets from the font's $180.
+// The pieces are numbered differently in each game (GameDef.t_box), so menus use these codes and each
+// output turns them into the tile of the game it draws with (piece_tile).
+enum { T_UNDERLINE = 0x60, T_SIDE, T_CORNER, T_EDGE, T_DOT };
+static int piece_tile(int t, const GameDef* g) { return t >= T_UNDERLINE && t <= T_DOT ? g->t_box[t - T_UNDERLINE] : t; }
+static uint32_t st_rgb(int pal, int ci) { return snes_rgb(g_gpal[pal * 4 + ci]); }
+static void st_tile(int x, int y, int t, int pal, int flip) {   // flip: 1 = horizontal, 2 = vertical
+  const uint8_t* g = g_gfont + piece_tile(t, g_font_game) * 16;
+  for (int r = 0; r < 8; r++) for (int b = 0; b < 8; b++) {
+    int rr = flip & 2 ? 7 - r : r, bb = flip & 1 ? 7 - b : b;
+    int ci = ((g[2 * rr] >> (7 - bb)) & 1) | ((g[2 * rr + 1] >> (7 - bb)) & 1) << 1;
+    if (ci) ui_px(x + b, y + r, st_rgb(pal, ci));
   }
 }
-static void ui_divider(int x, int y, int w) {
-  for (int i = 0; i < w; i++) { int a = 256 - abs(i - w / 2) * 512 / w; if (a < 0) a = 0; ui_blend(x + i, y, 0x5a9cff, a); }
-}
-static void ui_cursor(int x, int y) {   // a small lightsaber: grey hilt, glowing blue blade
-  int glow = 160 + (int)(60 * ((g_ui_tick / 4) % 8 < 4 ? (g_ui_tick / 4) % 4 : 3 - (g_ui_tick / 4) % 4) / 3);
-  for (int i = 0; i < 4; i++) { ui_px(x + i, y + 3, 0x9098a8); ui_px(x + i, y + 4, 0x606878); }
-  ui_px(x + 1, y + 3, 0xd0d8e0);
-  for (int i = 4; i < 13; i++) {
-    ui_blend(x + i, y + 2, 0x4080ff, glow / 2); ui_blend(x + i, y + 5, 0x4080ff, glow / 2);
-    ui_px(x + i, y + 3, 0xe8f4ff); ui_px(x + i, y + 4, ui_mix(0x80c0ff, 0xe8f4ff, 1, 2));
+static int st_w(const char* s) { return (int)strlen(ui_clean(s)) * 8; }
+static void st_text(int x, int y, const char* s, int pal) {
+  s = ui_clean(s);
+  for (; *s; s++, x += 8) {
+    if (*s == ' ') continue;
+    int t = g_gfont_ok ? gfont_tile((unsigned char)*s) : -1;
+    if (t >= 0) { st_tile(x, y, t - 0x180, pal, 0); continue; }
+    for (int pass = 0; pass < 2; pass++) for (int r = 0; r < 8; r++) {   // no game glyph: 8x8 font, same shades
+      int bits = ui_glyph_row((unsigned char)*s, r);
+      for (int b = 0; b < 8; b++) if (bits & (0x80 >> b)) {
+        if (pass == 0) ui_px(x + b + 1, y + r + 1, st_rgb(pal, 1));
+        else ui_px(x + b, y + r, st_rgb(pal, r < 3 ? 3 : 2));
+      }
+    }
   }
 }
-static void ui_select_bar(int x, int y, int w) {
-  for (int j = -1; j < 9; j++) for (int i = 0; i < w; i++) {
-    int a = 120 - i * 100 / w; if (j == -1 || j == 8) a /= 3;
-    ui_blend(x + i, y + j, 0x2a5cff, a);
+static void st_text_c(int y, const char* s, int pal) { st_text((256 - st_w(s)) / 2 / 8 * 8, y, s, pal); }
+// behind a box: the game's window halves the picture; ours sit on busier pictures (the game, the option
+// screen's own text), so they take it down to an eighth
+static void ui_darken(int x, int y) {
+  if (g_cv.scale == 1) { ui_blend(x, y, 0x000000, 128); return; }
+  if (x < 0 || x >= g_cv.w || y < 0 || y >= g_cv.h) return;
+  uint32_t* b = g_cv.buf + (2 * y + g_cv.yoff) * g_cv.stride + 2 * x;
+  b[0] = b[1] = b[g_cv.stride] = b[g_cv.stride + 1] = (b[0] >> 3) & 0x1f1f1f;
+}
+static void st_box(int x, int y, int w, int h) {   // pixels, multiples of 8, border included
+  for (int j = 0; j < h; j++) for (int i = 0; i < w; i++) ui_darken(x + i, y + j);
+  if (!g_gfont_ok) {   // no captured tiles: a plain frame in the box colours
+    for (int i = 0; i < w; i++) { ui_px(x + i, y + 2, st_rgb(PAL_BOX, 3)); ui_px(x + i, y + h - 3, st_rgb(PAL_BOX, 3)); }
+    for (int j = 0; j < h; j++) { ui_px(x + 2, y + j, st_rgb(PAL_BOX, 3)); ui_px(x + w - 3, y + j, st_rgb(PAL_BOX, 3)); }
+    return;
   }
+  for (int i = 8; i < w - 8; i += 8) { st_tile(x + i, y, T_EDGE, PAL_BOX, 0); st_tile(x + i, y + h - 8, T_EDGE, PAL_BOX, 2); }
+  for (int j = 8; j < h - 8; j += 8) { st_tile(x, y + j, T_SIDE, PAL_BOX, 0); st_tile(x + w - 8, y + j, T_SIDE, PAL_BOX, 1); }
+  st_tile(x, y, T_CORNER, PAL_BOX, 0); st_tile(x + w - 8, y, T_CORNER, PAL_BOX, 1);
+  st_tile(x, y + h - 8, T_CORNER, PAL_BOX, 2); st_tile(x + w - 8, y + h - 8, T_CORNER, PAL_BOX, 3);
 }
-static void ui_arrow(int x, int y, int up) {
-  for (int r = 0; r < 3; r++) for (int i = -r; i <= r; i++) ui_px(x + i, y + (up ? r : 2 - r), 0x7fa8e0);
+static void st_heading(int y, const char* s) {   // gold, centred, underlined
+  int x = (256 - st_w(s)) / 2 / 8 * 8;
+  st_text(x, y, s, PAL_GOLD);
+  if (g_gfont_ok) for (int i = 0; i < st_w(s); i += 8) st_tile(x + i, y + 8, T_UNDERLINE, PAL_BOX, 0);
 }
-// split "Label: value" into its two halves (value may be empty)
+static bool st_blink(void) { return (g_ui_tick / 16) & 1; }   // the selected value: white / green
+// split "Label: value" into its two halves (value may be empty); "Video..." -> "Video"
 static void ui_split(const char* in, char* label, char* value, int n) {
   const char* c = strstr(in, ": ");
-  if (!c) { snprintf(label, n, "%s", in); value[0] = 0; return; }
-  snprintf(label, n, "%.*s", (int)(c - in), in);
-  snprintf(value, n, "%s", c + 2);
+  if (!c) { snprintf(label, n, "%s", in); value[0] = 0; }
+  else { snprintf(label, n, "%.*s", (int)(c - in), in); snprintf(value, n, "%s", c + 2); }
+  size_t l = strlen(label);
+  if (l > 3 && !strcmp(label + l - 3, "...")) label[l - 3] = 0;
 }
-// generic list: rows of label/value with scrolling, selection bar and cursor
-static void ui_list(int top, int rows, int count, int sel, void (*item)(int i, char* out, int n), uint32_t (*color)(int i)) {
-  int first = sel - rows / 2;
-  if (first > count - rows) first = count - rows;
+
+// ---------------------------------------------------------------- menu screens as BG3 text
+// A menu screen is built as a grid of the game's BG3 text cells (32x28, like its option screen) plus the
+// boxes whose background is darkened. The game draws the grid itself: option_menu_tick writes it into
+// its BG3 tilemap and window table. Where that isn't possible yet, cg_draw_pixels draws the same grid
+// over the picture.
+#define CG_W 32
+#define CG_H 28
+static uint16_t g_cg[CG_H][CG_W];   // 0 = empty, else $100 | tile (offset from the font's $180), palette << 10, flips << 14
+static struct { int c, r, w, h; } g_cg_box[4];
+static int g_cg_nbox;
+static void cg_clear(void) { memset(g_cg, 0, sizeof g_cg); g_cg_nbox = 0; }
+static void cg_tile(int c, int r, int t, int pal, int flip) {
+  if (c >= 0 && c < CG_W && r >= 0 && r < CG_H) g_cg[r][c] = (uint16_t)(0x100 | t | pal << 10 | flip << 14);
+}
+static int cg_len(const char* s) { return (int)strlen(ui_clean(s)); }
+static void cg_text(int c, int r, const char* s, int pal) {   // characters the font doesn't have are left blank
+  for (s = ui_clean(s); *s; s++, c++) { int t = gfont_tile((unsigned char)*s); if (t >= 0) cg_tile(c, r, t - 0x180, pal, 0); }
+}
+static void cg_text_c(int r, const char* s, int pal) { cg_text((CG_W - cg_len(s)) / 2, r, s, pal); }
+static void cg_box(int c, int r, int w, int h) {   // in cells, border included
+  if (g_cg_nbox < 4) { g_cg_box[g_cg_nbox].c = c; g_cg_box[g_cg_nbox].r = r; g_cg_box[g_cg_nbox].w = w; g_cg_box[g_cg_nbox].h = h; g_cg_nbox++; }
+  for (int i = 1; i < w - 1; i++) { cg_tile(c + i, r, T_EDGE, PAL_BOX, 0); cg_tile(c + i, r + h - 1, T_EDGE, PAL_BOX, 2); }
+  for (int j = 1; j < h - 1; j++) { cg_tile(c, r + j, T_SIDE, PAL_BOX, 0); cg_tile(c + w - 1, r + j, T_SIDE, PAL_BOX, 1); }
+  cg_tile(c, r, T_CORNER, PAL_BOX, 0); cg_tile(c + w - 1, r, T_CORNER, PAL_BOX, 1);
+  cg_tile(c, r + h - 1, T_CORNER, PAL_BOX, 2); cg_tile(c + w - 1, r + h - 1, T_CORNER, PAL_BOX, 3);
+}
+static void cg_heading(int r, const char* s) {   // gold, centred, underlined
+  int c = (CG_W - cg_len(s)) / 2;
+  cg_text(c, r, s, PAL_GOLD);
+  for (int i = 0; i < cg_len(s); i++) cg_tile(c + i, r + 1, T_UNDERLINE, PAL_BOX, 0);
+}
+// Where a menu screen goes. On the option screen it takes the game's own upper box (the lower box stays
+// the game's CONTROL PAD box unless a screen uses it) and the selection blinks, as in the game. In a stage
+// it is one bigger box with the title menu's dot cursor.
+typedef struct { int bc, br, bw, bh; bool dot; } CgLayout;
+static const CgLayout k_lay_option = {4, 4, 25, 13, false};   // the GAME OPTION MENU box (moved up 4 rows)
+static const CgLayout k_lay_pause = {2, 5, 28, 21, true};       // rows 5-25, under the HUD
+static const CgLayout* g_lay = &k_lay_pause;
+static bool g_cg_lower;                                         // the screen drew the lower box itself
+#define LAY_LC (g_lay->bc + 2)                     // labels
+#define LAY_VC (g_lay->bc + g_lay->bw - 2)         // values end before this column (one blank cell before the side)
+#define LAY_TOP (g_lay->br + 4)                    // first row of a list
+#define LAY_ROWS (g_lay->bh - 6)                   // rows a list may use
+// a list: gold labels from column c, green values ending before column cr, every second row like the
+// game, scrolling. The selected row blinks white (its value, or the label if it has none), or with the
+// dot layout gets the dot two cells left of it and a blinking value. pal(i): PAL_GOLD, or PAL_OFF.
+static void cg_list(int c, int cr, int top, int rows, int count, int sel, void (*item)(int i, char* out, int n), int (*pal)(int i)) {
+  int step = 2, vis = (rows + 1) / 2;
+  if (vis > count) vis = count;
+  int first = sel - vis / 2;
+  if (first > count - vis) first = count - vis;
   if (first < 0) first = 0;
-  for (int r = 0; r < rows && first + r < count; r++) {
-    int i = first + r, y = top + r * 12;
+  for (int k = 0; k < vis && first + k < count; k++) {
+    int i = first + k, r = top + k * step;
     char buf[80], lab[80], val[80];
     item(i, buf, sizeof buf);
     ui_split(buf, lab, val, sizeof lab);
-    uint32_t c = color ? color(i) : 0xc8d8ff;
-    if (i == sel) { ui_select_bar(22, y, 214); ui_cursor(11, y); c = 0xffffff; }
-    int maxlab = val[0] ? 27 - (int)strlen(val) - 1 : 27;
-    if ((int)strlen(lab) > maxlab && maxlab > 3) { lab[maxlab - 1] = '.'; lab[maxlab] = 0; }
-    ui_text(24, y, lab, c);
-    if (val[0]) ui_text_r(236, y, val, i == sel ? 0xfff0a0 : 0xf0c848);
+    int maxlab = val[0] ? cr - c - cg_len(val) - 2 : cr - c;
+    if (cg_len(lab) > maxlab && maxlab > 3) lab[maxlab] = 0;
+    int lp = pal ? pal(i) : PAL_GOLD;
+    if (i == sel && g_lay->dot) cg_tile(c - 2, r, T_DOT, PAL_WHITE, 0);
+    cg_text(c, r, lab, i == sel && !g_lay->dot && !val[0] && st_blink() ? PAL_WHITE : lp);
+    if (val[0]) cg_text(cr - cg_len(val), r, val, lp == PAL_OFF ? PAL_OFF : i == sel && st_blink() ? PAL_WHITE : PAL_GREEN);
   }
-  if (first > 0) ui_arrow(244, top - 1, 1);
-  if (first + rows < count) ui_arrow(244, top + rows * 12 - 5, 0);
 }
-static void ui_footer(const char* s) { ui_text(128 - ui_text_w(s, 1) / 2, 204, s, 0x7f94b8); }
+static void cg_page(const char* heading) {   // the layout's box with its heading
+  cg_box(g_lay->bc, g_lay->br, g_lay->bw, g_lay->bh);
+  cg_heading(g_lay->br + 1, heading);
+}
+static void cg_draw_pixels(void) {   // the grid over the picture (the menu canvas)
+  for (int b = 0; b < g_cg_nbox; b++)
+    for (int y = g_cg_box[b].r * 8; y < (g_cg_box[b].r + g_cg_box[b].h) * 8; y++)
+      for (int x = g_cg_box[b].c * 8; x < (g_cg_box[b].c + g_cg_box[b].w) * 8; x++) ui_darken(x, y);
+  for (int r = 0; r < CG_H; r++) for (int c = 0; c < CG_W; c++) {
+    uint16_t v = g_cg[r][c];
+    if (v) st_tile(c * 8, r * 8, v & 0xFF, (v >> 10) & 7, v >> 14);
+  }
+}
 
 static void menu_label(int i, char* out, int n) {
   switch (i) {
     case M_RESUME: snprintf(out, n, "Resume"); break;
     case M_ACH: snprintf(out, n, "Achievements: %d/%d", ach_unlocked_count(), ach_total()); break;
     case M_CONTROLS: snprintf(out, n, "Controls..."); break;
-    case M_STATS: snprintf(out, n, "Stats & best times..."); break;
+    case M_STATS: snprintf(out, n, "Stats and times..."); break;
     case M_TIMER: snprintf(out, n, "Speedrun timer: %s", cfg.timer ? "On" : "Off"); break;
     case M_REWIND: snprintf(out, n, "Rewind (Bksp/LT): %s", cfg.rewind ? "On" : "Off"); break;
     case M_CONTINUE: if (HAS(GF_RESTORED) && g_cont_stage == 18) snprintf(out, n, "Continue: Restored stage");
-      else if (g_cont_stage && g_cont_stage <= g_game->nstages && g_game->stage_names) snprintf(out, n, "Continue: %s", g_game->stage_names[g_cont_stage - 1]);
+      else if (g_cont_stage && g_cont_stage <= g_game->nstages && g_game->stage_names && strlen(g_game->stage_names[g_cont_stage - 1]) <= 14)
+        snprintf(out, n, "Continue: %s", g_game->stage_names[g_cont_stage - 1]);
       else if (g_cont_stage) snprintf(out, n, "Continue: Stage %d", g_cont_stage); else snprintf(out, n, "Continue: none yet"); break;
     case M_WIDE: snprintf(out, n, "Widescreen: %s", k_wide_names[cfg.wide]); break;
-    case M_M7: snprintf(out, n, "Mode 7 detail: %s", k_m7_names[cfg.m7]); break;
+    case M_M7: snprintf(out, n, "Mode 7: %s", k_m7_names[cfg.m7]); break;
     case M_SLOW: snprintf(out, n, "Remove slowdown: %s", cfg.no_slowdown ? "On" : "Off"); break;
     case M_RUMBLE: snprintf(out, n, "Rumble: %s", cfg.rumble ? "On" : "Off"); break;
-    case M_NOLIMIT: snprintf(out, n, "Sprite flicker: %s", cfg.nolimit ? "Removed" : "Original"); break;
+    case M_NOLIMIT: snprintf(out, n, "Flicker: %s", cfg.nolimit ? "Removed" : "Original"); break;
     case M_RESTART: snprintf(out, n, "Restart stage"); break;
     case M_CRT: { static const char* c[] = {"Off", "Scanlines", "Full CRT"}; snprintf(out, n, "CRT filter: %s", c[cfg.crt]); break; }
-    case M_RESTORED: snprintf(out, n, "Restored cut stage: %s", !restore_available() ? "n/a" : cfg.restored ? "On" : "Off"); break;
-    case M_MUSIC: snprintf(out, n, "Music: %s", !g_msu_songs ? "Original (no pack)" : cfg.msu ? "Orchestral" : "Original"); break;
+    case M_RESTORED: snprintf(out, n, "Restored stage: %s", !restore_available() ? "n/a" : cfg.restored ? "On" : "Off"); break;
+    case M_MUSIC: snprintf(out, n, "Music: %s", !g_msu_songs ? "No pack" : cfg.msu ? "Orchestral" : "Original"); break;
     case M_ASPECT: snprintf(out, n, "Aspect: %s", k_aspect_names[cfg.aspect]); break;
     case M_INTEGER: snprintf(out, n, "Integer scaling: %s", cfg.integer_scale ? "On" : "Off"); break;
     case M_SMOOTH: snprintf(out, n, "Smoothing: %s", cfg.smooth ? "On" : "Off"); break;
     case M_FULL: snprintf(out, n, "Fullscreen: %s", cfg.fullscreen ? "On" : "Off"); break;
     case M_VOLUME: snprintf(out, n, "Volume: %d%%", cfg.volume); break;
-    case M_MUSICVOL: snprintf(out, n, "Orchestral volume: %d%%", cfg.music_vol); break;
+    case M_MUSICVOL: snprintf(out, n, "Music volume: %d%%", cfg.music_vol); break;
     case M_INTERP: snprintf(out, n, "Sound: %s", cfg.interp ? "Crisp" : "Original"); break;
     case M_COLOR: { static const char* c[] = {"Original", "Vivid", "Soft (TV)"}; snprintf(out, n, "Colours: %s", c[cfg.color]); break; }
     case M_SABER: snprintf(out, n, "%s: %s", g_game->cheat_a_name, !UNLOCKED ? "Locked" : cfg.saber ? "On" : "Off"); break;
     case M_HERO: snprintf(out, n, "%s: %s", g_game->cheat_b_name, !UNLOCKED ? "Locked" : cfg.hero ? "On" : "Off"); break;
-    case M_GAME: snprintf(out, n, "Game: %s", g_game->menu_name); break;
-    case M_TRILOGY: snprintf(out, n, "After the ending: %s", cfg.trilogy ? "Next game" : "Same game"); break;
-    case M_SPAWN: snprintf(out, n, "Wide enemies: %s", cfg.wide_spawn == 1 ? "Spawn early" : cfg.wide_spawn == 2 ? "Like original" : "Shown"); break;
-    case M_DEV: snprintf(out, n, "Developer features: %s", cfg.dev ? "On" : "Off"); break;
-    case M_LEVEL: snprintf(out, n, "Level select%s", !UNLOCKED ? ": Locked" : in_stage() ? "" : " (in a stage)"); break;
+    case M_GAME: snprintf(out, n, "Game: %s", !strcmp(g_game->key, "esb") ? "Empire" : !strcmp(g_game->key, "srotj") ? "Jedi" : "Star Wars"); break;
+    case M_TRILOGY: snprintf(out, n, "At the end: %s", cfg.trilogy ? "Next game" : "Same game"); break;
+    case M_SPAWN: snprintf(out, n, "Enemies: %s", cfg.wide_spawn == 1 ? "Spawn early" : cfg.wide_spawn == 2 ? "Like SNES" : "Shown"); break;
+    case M_DEV: snprintf(out, n, "Developer mode: %s", cfg.dev ? "On" : "Off"); break;
+    case M_LEVEL: snprintf(out, n, "Level select%s", !UNLOCKED ? ": Locked" : ""); break;
     case M_CLEAR: snprintf(out, n, "Clear this stage"); break;
     case M_SAVE: snprintf(out, n, "Save state"); break;
     case M_LOAD: snprintf(out, n, "Load state"); break;
@@ -786,10 +945,11 @@ static void menu_label(int i, char* out, int n) {
     case M_PG_VIDEO: snprintf(out, n, "Video..."); break;
     case M_PG_AUDIO: snprintf(out, n, "Audio..."); break;
     case M_PG_GAME: snprintf(out, n, "Gameplay..."); break;
-    case M_PG_EXTRAS: snprintf(out, n, "Extras & unlockables..."); break;
+    case M_PG_EXTRAS: snprintf(out, n, "Extras..."); break;
     case M_PG_OPTIONS: snprintf(out, n, "Options..."); break;
-    case M_TITLE: snprintf(out, n, "Quit to title screen"); break;
-    case M_PAUSEBTN: snprintf(out, n, "Start button: %s", cfg.pause_menu ? "Pause menu" : "Original pause"); break;
+    case M_TITLE: snprintf(out, n, "Quit to title"); break;
+    case M_PAUSEBTN: snprintf(out, n, "Start: %s", cfg.pause_menu ? "Pause menu" : "Game pause"); break;
+    case M_M7DMG: snprintf(out, n, "Speeder damage: %s", cfg.m7_damage ? "Half" : "Normal"); break;
     case M_REPORT:   // the file is ssw_report_<date>_<hh-mm-ss>.txt; the row only has room for the time
       if (g_report_timer > 0) { const char* r = crashlog_last_report(); size_t l = strlen(r);
         snprintf(out, n, "Saved report %.2s:%.2s:%.2s", l >= 8 ? r + l - 8 : "", l >= 5 ? r + l - 5 : "", l >= 2 ? r + l - 2 : ""); }
@@ -797,36 +957,38 @@ static void menu_label(int i, char* out, int n) {
       break;
   }
 }
-static void ach_item(int i, char* out, int n) { const char *t, *d; int got = ach_get(i, &t, &d); snprintf(out, n, "%s%s", got ? "* " : "  ", t); }
-static uint32_t ach_color(int i) { const char *t, *d; return ach_get(i, &t, &d) ? 0xf8d860 : 0x8090a8; }
+static void ach_item(int i, char* out, int n) { const char *t, *d; ach_get(i, &t, &d); snprintf(out, n, "%s", t); }
+static int ach_pal(int i) { const char *t, *d; return ach_get(i, &t, &d) ? PAL_GOLD : PAL_OFF; }
+// the list in the upper box, the selected one's name and description in the lower box (the option
+// screen's CONTROL PAD box)
 static void draw_ach_screen(void) {
-  ui_panel(8, 6, 240, 212);
   char hdr[48]; snprintf(hdr, sizeof hdr, "ACHIEVEMENTS %d/%d", ach_unlocked_count(), ach_total());
-  ui_title(14, hdr);
-  ui_divider(16, 34, 224);
-  ui_list(40, 10, ach_total(), g_ach_sel, ach_item, ach_color);
-  ui_divider(16, 163, 224);
-  const char *t, *d; ach_get(g_ach_sel, &t, &d);
-  const char* p = d; int y = 168;
-  while (*p && y < 200) {
+  int lr = g_lay->br + g_lay->bh + 1, lh = 26 - lr;   // the lower box: rows lr..25 (option screen: 18..26)
+  if (g_lay == &k_lay_pause) { cg_box(g_lay->bc, g_lay->br, g_lay->bw, 12); cg_heading(g_lay->br + 1, hdr); lr = g_lay->br + 12; lh = 9; }
+  else { cg_page(hdr); lh = 9; }
+  cg_list(LAY_LC, LAY_VC, LAY_TOP, g_lay == &k_lay_pause ? 5 : LAY_ROWS, ach_total(), g_ach_sel, ach_item, ach_pal);
+  cg_box(g_lay->bc, lr, g_lay->bw, lh);
+  g_cg_lower = true;
+  const char *t, *d; int got = ach_get(g_ach_sel, &t, &d);
+  cg_text_c(lr + 1, t, got ? PAL_GOLD : PAL_OFF);
+  int w = g_lay->bw - 3;
+  const char* p = d; int r = lr + 3;
+  while (*p && r < lr + lh - 1) {   // every second row, like the game's text
     int n = (int)strlen(p), cut = n;
-    if (n > 28) { cut = 28; while (cut > 0 && p[cut] != ' ') cut--; if (!cut) cut = 28; }
+    if (n > w) { cut = w; while (cut > 0 && p[cut] != ' ') cut--; if (!cut) cut = w; }
     char line[40]; snprintf(line, sizeof line, "%.*s", cut, p);
-    ui_text(128 - ui_text_w(line, 1) / 2, y, line, 0xc8d8ff);
-    y += 10; p += cut; while (*p == ' ') p++;
+    cg_text_c(r, line, got ? PAL_GREEN : PAL_WHITE);
+    r += 2; p += cut; while (*p == ' ') p++;
   }
-  ui_footer("ESC: BACK");
 }
 // ---------------------------------------------------------------- stats screen
 static int g_stats_screen;
 static char g_stat_lines[40][48]; static int g_stat_n;
 static void stat_item(int i, char* out, int n) { snprintf(out, n, "%s", g_stat_lines[i]); }
-static uint32_t stat_color(int i) { return g_stat_lines[i][0] == '-' ? 0xf0a040 : 0xc8d8ff; }
+static int stat_pal(int i) { return g_stat_lines[i][0] == '-' ? PAL_WHITE : PAL_GOLD; }
 static int g_stat_sel;
 static void draw_stats_screen(void) {
-  ui_panel(8, 6, 240, 212);
-  ui_title(14, "STATISTICS");
-  ui_divider(16, 34, 224);
+  cg_page("STATISTICS");
   char lines[12][48];
   int n = extras_stat_lines(lines, 12);
   g_stat_n = 0;
@@ -836,7 +998,7 @@ static void draw_stats_screen(void) {
     int e = k; while (e > 0 && l[e - 1] == ' ') e--;
     snprintf(g_stat_lines[g_stat_n++], 48, "%.*s: %s", e, l, l + k);
   }
-  snprintf(g_stat_lines[g_stat_n++], 48, "-- Best stage times --");
+  snprintf(g_stat_lines[g_stat_n++], 48, "- BEST STAGE TIMES -");
   for (int i = 0; i < g_game->nstages && g_stat_n < 40; i++) {
     uint32_t b = extras_best_stage(g_game->stages[i][0], g_game->stages[i][1]);
     char t[24]; if (b) extras_format_time(t, sizeof t, b); else snprintf(t, sizeof t, "--");
@@ -845,8 +1007,7 @@ static void draw_stats_screen(void) {
     else snprintf(g_stat_lines[g_stat_n++], 48, "Stage %d: %s", i + 1, t);
   }
   if (g_stat_sel >= g_stat_n) g_stat_sel = g_stat_n - 1;
-  ui_list(40, 13, g_stat_n, g_stat_sel, stat_item, stat_color);
-  ui_footer("UP/DOWN: SCROLL   ESC: BACK");
+  cg_list(LAY_LC, LAY_VC, LAY_TOP, LAY_ROWS, g_stat_n, g_stat_sel, stat_item, stat_pal);
 }
 // ---------------------------------------------------------------- controls screen
 static int g_ctrl_screen, g_ctrl_sel, g_ctrl_wait;
@@ -855,28 +1016,19 @@ static const char* pad_name(int b) {
                             "D-Up", "D-Down", "D-Left", "D-Right", "Misc", "P1", "P2", "P3", "P4", "Touch"};
   return b >= 0 && b < (int)(sizeof n / sizeof n[0]) ? n[b] : "-";
 }
+// one row per SNES button: "B JUMP   Z  A" (key, then pad button); the last row resets them
+static void ctrl_item(int i, char* out, int n) {
+  if (i == 12) { snprintf(out, n, "Reset to defaults"); return; }
+  if (g_ctrl_wait && i == g_ctrl_sel) { snprintf(out, n, "%.9s: ...", k_btn_names[i]); return; }
+  char kn[32]; const char* nm = g_keymap[i] ? SDL_GetKeyName(g_keymap[i]) : "-";
+  if (!strncmp(nm, "Right ", 6) && nm[6]) snprintf(kn, sizeof kn, "R%.6s", nm + 6);
+  else if (!strncmp(nm, "Left ", 5) && nm[5]) snprintf(kn, sizeof kn, "L%.6s", nm + 5);
+  else snprintf(kn, sizeof kn, "%.7s", nm);
+  snprintf(out, n, "%.9s: %s  %s", k_btn_names[i], kn, pad_name(g_padmap[i]));
+}
 static void draw_ctrl_screen(void) {
-  ui_panel(8, 6, 240, 212);
-  ui_title(14, "CONTROLS");
-  ui_divider(16, 34, 224);
-  ui_text(24, 40, "SNES", 0x7f94b8); ui_text(104, 40, "KEY", 0x7f94b8); ui_text(172, 40, "PAD", 0x7f94b8);
-  for (int i = 0; i <= 12; i++) {
-    int y = 52 + i * 11;
-    bool sel = i == g_ctrl_sel;
-    uint32_t c = sel ? 0xffffff : 0xc8d8ff;
-    if (sel) { ui_select_bar(22, y, 214); ui_cursor(11, y); }
-    if (i == 12) { ui_text(24, y, "Reset to defaults", c); break; }
-    char kn[32]; const char* nm = g_keymap[i] ? SDL_GetKeyName(g_keymap[i]) : "-";
-    if (!strncmp(nm, "Right ", 6) && nm[6]) snprintf(kn, sizeof kn, "R%.7s", nm + 6);
-    else if (!strncmp(nm, "Left ", 5) && nm[5]) snprintf(kn, sizeof kn, "L%.7s", nm + 5);
-    else snprintf(kn, sizeof kn, "%.8s", nm);
-    char nmb[16]; snprintf(nmb, sizeof nmb, "%.10s", k_btn_names[i]);
-    ui_text(24, y, nmb, c);
-    bool wait = g_ctrl_wait && sel && (g_ui_tick / 15) % 2;
-    ui_text(104, y, g_ctrl_wait && sel ? (wait ? "..." : "") : kn, sel ? 0xfff0a0 : 0xf0c848);
-    ui_text(172, y, g_ctrl_wait && sel ? (wait ? "..." : "") : pad_name(g_padmap[i]), sel ? 0xfff0a0 : 0xf0c848);
-  }
-  ui_footer(g_ctrl_wait ? "PRESS A KEY OR BUTTON (ESC: CANCEL)" : "ENTER: CHANGE   ESC: BACK");
+  cg_page(g_ctrl_wait ? "PRESS A KEY OR BUTTON" : "CONTROLS");
+  cg_list(LAY_LC, LAY_VC, LAY_TOP, LAY_ROWS, 13, g_ctrl_sel, ctrl_item, NULL);
 }
 static void bind_key(int row, SDL_Keycode k) {
   for (int i = 0; i < 12; i++) if (i != row && g_keymap[i] == k) g_keymap[i] = g_keymap[row];   // swap
@@ -887,26 +1039,33 @@ static void bind_pad(int row, int b) {
   g_padmap[row] = b;
 }
 static void page_item(int i, char* out, int n) { menu_label(k_pages[g_page][i], out, n); }
-static uint32_t page_color(int i) {
+static int page_pal(int i) {
   int id = k_pages[g_page][i];
-  if ((id == M_RESTART && !restart_available()) || (id == M_CONTINUE && !g_cont_stage)) return 0x6c7890;
+  if ((id == M_RESTART && !restart_available()) || (id == M_CONTINUE && !g_cont_stage)) return PAL_OFF;
   char b[80]; menu_label(id, b, sizeof b);
-  return strstr(b, "Locked") || strstr(b, "(not in") || strstr(b, "n/a") || strstr(b, "no save") ? 0x6c7890 : 0xc8d8ff;
+  if (id == M_LEVEL && !in_stage()) return PAL_OFF;
+  return strstr(b, "Locked") || strstr(b, "n/a") || strstr(b, "none yet") ? PAL_OFF : PAL_GOLD;
 }
-static void draw_menu(void) {
+static void ui_backdrop(void) {   // the game picture under the menu, at half brightness
+  uint32_t* p = ui_buf();
+  for (int i = 0; i < 512 * 480; i++) p[i] = (p[i] >> 1) & 0x7f7f7f;
+}
+static void menu_build(void) {   // the open menu screen, into the cell grid
   g_ui_tick++;
-  ui_canvas_menu();
-  ui_backdrop();
+  cg_clear();
+  g_cg_lower = false;
+  g_lay = g_menu_bg3 && g_om_on && g_om_return ? &k_lay_option : &k_lay_pause;
   if (g_ach_screen) { draw_ach_screen(); return; }
   if (g_ctrl_screen) { draw_ctrl_screen(); return; }
   if (g_stats_screen) { draw_stats_screen(); return; }
-  ui_panel(8, 6, 240, 212);
-  ui_title(14, k_page_titles[g_page]);
-  if (g_page == 0) { const char* sub = game_is_play_mode(game_mode(g_snes->ram)) ? "PAUSED" : "PC EDITION"; ui_text(128 - ui_text_w(sub, 1) / 2, 32, sub, 0x7fa8e0); }
-  ui_divider(16, g_page == 0 ? 42 : 34, 224);
-  int top = g_page == 0 ? 48 : 40;
-  ui_list(top, g_page == 0 ? 12 : 13, page_len(g_page), g_sel, page_item, page_color);
-  ui_footer(g_page == 4 && !UNLOCKED ? "BEAT THE GAME TO UNLOCK" : g_page == 5 ? "ENTER: SELECT   ESC: BACK" : g_page ? "ENTER: CHANGE   ESC: BACK" : "ENTER: SELECT   ESC: RESUME");
+  cg_page(k_page_titles[g_page]);
+  cg_list(LAY_LC, LAY_VC, LAY_TOP, LAY_ROWS, page_len(g_page), g_sel, page_item, page_pal);
+}
+static void draw_menu(void) {   // drawn over the picture (where the game can't draw it itself)
+  ui_canvas_menu();
+  ui_backdrop();
+  menu_build();
+  cg_draw_pixels();
 }
 static void menu_change(int dir, bool activate) {
   int item = k_pages[g_page][g_sel];
@@ -916,6 +1075,7 @@ static void menu_change(int dir, bool activate) {
       return;
     case M_TITLE: if (activate) { crashlog_event("quit to title"); snes_reset(g_snes, false); rewind_clear(); g_menu = false; } return;
     case M_PAUSEBTN: cfg.pause_menu ^= 1; break;
+    case M_M7DMG: cfg.m7_damage ^= 1; break;
     case M_RESUME: if (activate) g_menu = false; break;
     case M_ACH: if (activate) g_ach_screen = 1; break;
     case M_STATS: if (activate) g_stats_screen = 1; break;
@@ -985,7 +1145,7 @@ static void menu_key(int dir_y, int dir_x, bool enter) {
   }
   if (g_ach_screen) {
     if (dir_y) g_ach_sel = (g_ach_sel + dir_y + ach_total()) % ach_total();
-    if (enter) { g_ach_screen = 0; if (g_tm_return && g_page == 0) open_menu(false); }
+    if (enter) { g_ach_screen = 0; if (g_om_return && g_page == 0) open_menu(false); }
     return;
   }
   if (dir_y) g_sel = (g_sel + dir_y + page_len(g_page)) % page_len(g_page);
@@ -999,7 +1159,8 @@ static void menu_back(void) {   // settings pages -> Options -> pause menu, land
 }
 static void open_menu(bool open) {
   g_menu = open;
-  g_tm_return = 0;
+  g_menu_bg3 = false;
+  g_om_return = 0;
   g_ctrl_screen = g_ctrl_wait = g_stats_screen = 0;
   g_page = 0; if (open) g_sel = 0;
   if (open) for (int i = 0; i < 12; i++) set_btn(i, false);
@@ -1010,26 +1171,27 @@ static void open_menu(bool open) {
 // HUD overlay in the menu's style: achievement pop-up (top centre) and speedrun timer (top right),
 // drawn into a transparent canvas cw x 224 that is stretched over the picture.
 static uint32_t g_hud[512 * 224];
+static unsigned g_hud_ingame;
 static bool draw_hud(int cw) {
   memset(g_hud, 0, sizeof g_hud);
   g_cv.buf = g_hud; g_cv.w = cw; g_cv.h = 224; g_cv.stride = 512; g_cv.scale = 1; g_cv.yoff = 0; g_cv.alpha = 1;
   bool any = false;
-  if (g_toast_id >= 0 && !g_menu) {
+  if (g_toast_id >= 0 && !g_menu && !(g_hud_ingame & 1)) {
     const char *t, *d; ach_get(g_toast_id, &t, &d);
     char ttl[48]; snprintf(ttl, sizeof ttl, "%.28s", t);
-    int w = ui_text_w(ttl, 1) + 36; if (w < 150) w = 150;
-    int x = (cw - w) / 2, y = 30;
+    int w = (st_w(ttl) + 40 + 7) / 8 * 8; if (w < 152) w = 152;
+    int x = (cw - w) / 2 / 8 * 8, y = 24;
     int slide = g_toast_timer > 225 ? (g_toast_timer - 225) * 3 : g_toast_timer < 15 ? (15 - g_toast_timer) * 3 : 0;
     y -= slide;
-    ui_panel(x, y, w, 30);
+    st_box(x, y, w, 40);
     // star icon
     static const char* star[] = {"...#...", "...#...", "..###..", "#######", ".#####.", "..###..", ".##.##.", "##...##"};
-    for (int r = 0; r < 8; r++) for (int i = 0; i < 7; i++) if (star[r][i] == '#') ui_px(x + 8 + i, y + 11 + r, ui_mix(0xfff2a0, 0xe86a10, r, 8));
-    ui_text_ex(x + 22, y + 6, "ACHIEVEMENT", 0xfff2a0, 0xe86a10, 1);
-    ui_text(x + 22, y + 16, ttl, 0xffffff);
+    for (int r = 0; r < 8; r++) for (int i = 0; i < 7; i++) if (star[r][i] == '#') ui_px(x + 12 + i, y + 16 + r, st_rgb(PAL_GOLD, r < 3 ? 3 : 2));
+    st_text(x + 28, y + 9, "ACHIEVEMENT", PAL_GOLD);
+    st_text(x + 28, y + 23, ttl, PAL_GREEN);
     any = true;
   }
-  if (cfg.timer && !g_menu) {
+  if (cfg.timer && !g_menu && !(g_hud_ingame & 2)) {
     char run[24], st[24]; uint32_t col, scol; int show_split;
     if (extras_timer_text(run, sizeof run, st, sizeof st, &col, &scol, &show_split)) {
       ui_text_r(cw - 6, 26, run, col);
@@ -1044,105 +1206,412 @@ static void toast_tick(void) {
   if (g_toast_id < 0) { int id = ach_pop_toast(); if (id >= 0) { g_toast_id = id; g_toast_timer = 240; } }
 }
 
-// ---------------------------------------------------------------- title-screen menu: PC SETTINGS / ACHIEVEMENTS
-// The game's title box (BG3) lists its items on every second row, with a dot tile left of the selected
-// one. While it is on screen we lay the box out again in VRAM, single-spaced: the game's items, then
-// ours -- growing the box by a row when it needs one, together with the per-line window table that
-// darkens the artwork behind it -- so it is drawn by the game's own PPU setup in every video mode.
-// We keep our own cursor and set the game's cursor variable to match, so Start picks the right item.
-static int g_tm_on, g_tm_sel;
-static uint16_t g_tm_text[4][13], g_tm_dot, g_tm_blank, g_tm_left, g_tm_right, g_tm_bottom[17], g_tm_attr;
-static int g_tm_win_last[2];           // last "window on" line of each window table, at activation
-static const char* const k_tm_ours[2] = {"PC SETTINGS", "ACHIEVEMENTS"};
-static inline uint16_t* tm_cell(int row, int col) { return &g_snes->ppu->vram[(0x800 + row * 32 + col) & 0x7fff]; }
-static bool tm_visible(void) {
-  const GameDef* g = g_game; uint8_t* r = g_snes->ram;
-  if (!g->tm_items || game_mode(r) != g->title_mode || game_scene(r) != g->title_scene) return false;
-  if ((*tm_cell(26, 6) & 0x3ff) != g->font_base + 0x25) return false;       // title text on screen
-  return (*tm_cell(g->tm_box_top, 8) & 0x3ff) != (*tm_cell(g->tm_box_top - 2, 8) & 0x3ff);   // and the box
+// ---------------------------------------------------------------- GAME OPTION MENU: PC SETTINGS / ACHIEVEMENTS
+// The option screen is BG3 text from a tilemap copy in WRAM (GameDef.bg3_shadow) that the game uploads to
+// VRAM $0800. Its upper box (rows 8-16) lists DIFFICULTY and SOUND on rows 12 and 14, and the selected
+// value blinks (palette 3 / 0). While it is on screen we draw that box four rows higher, after the game's
+// uploads, with our two rows under the game's in the same spacing and colours, and start the window that
+// darkens the artwork behind it four rows higher too. We keep our own cursor and set the game's to match.
+static int g_om_sel;            // g_om_sel: 0-1 the game's items, 2 PC SETTINGS, 3 ACHIEVEMENTS
+static unsigned g_om_tick;
+static inline uint16_t* bg3_cell(int row, int col) { return &g_snes->ppu->vram[(0x800 + row * 32 + col) & 0x7fff]; }
+static uint16_t om_shadow(int row, int col) {
+  uint32_t a = g_game->bg3_shadow + (row * 32 + col) * 2;
+  return g_snes->ram[a & 0x1ffff] | g_snes->ram[(a + 1) & 0x1ffff] << 8;
 }
-static void tm_activate(void) {
-  const GameDef* g = g_game;
-  int cur = g_snes->ram[g->tm_cursor];
-  for (int i = 0; i < g->tm_items && i < 4; i++)
-    for (int c = 0; c < 13; c++) g_tm_text[i][c] = *tm_cell(g->tm_first_row + 2 * i, 11 + c);
-  g_tm_dot = *tm_cell(g->tm_first_row + 2 * (cur < g->tm_items ? cur : 0), 9);
-  g_tm_blank = *tm_cell(g->tm_first_row + 1, 12);
-  g_tm_left = *tm_cell(g->tm_first_row + 1, 8);
-  g_tm_right = *tm_cell(g->tm_first_row + 1, 24);
-  for (int c = 0; c < 17; c++) g_tm_bottom[c] = *tm_cell(g->tm_box_bottom, 8 + c);
-  g_tm_attr = g_tm_text[0][0] & 0xFC00;
-  for (int k = 0; k < 2; k++) {
-    g_tm_win_last[k] = -1;
-    for (int y = 0; y < 224; y++) {
-      uint8_t* w = &g_snes->ram[(g->tm_window[k] + y * 2) & 0x1ffff];
-      if (w[0] <= w[1]) g_tm_win_last[k] = y;
+static int om_glyph(int c) { int t = gfont_tile(c); return t < 0 ? -1 : t - 0x180 + g_game->font_base; }
+static bool om_visible(void) {   // the title mode with "GAME OPTION MENU" on row 9
+  const GameDef* g = g_game; uint8_t* r = g_snes->ram;
+  if (!g->bg3_shadow || !g_gfont_ok || game_mode(r) != g->title_mode || game_scene(r) != g->title_scene) return false;
+  return (om_shadow(9, 8) & 0x3ff) == om_glyph('G') && (om_shadow(9, 15) & 0x3ff) == om_glyph('T') &&
+         (om_shadow(9, 20) & 0x3ff) == om_glyph('M');
+}
+static void om_put(int row, int col, const char* t, uint16_t attr) {
+  for (; *t; t++, col++) { int gt = om_glyph(*t); if (gt >= 0) *bg3_cell(row, col) = (uint16_t)(gt | attr); }
+}
+// the window that darkens the artwork behind the boxes: the game's (x 32-232 on lines 64-135 and 144-215,
+// the same in both games) with the upper box starting 32 lines higher
+static void om_window_put(void) {   // the table window 1 is fed from (indirect HDMA to $2126/$2127, 2 bytes a line)
+  uint8_t* w = &g_snes->ram[g_game->tm_window[0] & 0x1ffff];
+  for (int y = 0; y < 224; y++) {
+    bool on = (y >= 32 && y < 136) || (y >= 144 && y < 216);
+    w[y * 2] = on ? 32 : 255; w[y * 2 + 1] = on ? 232 : 0;
+  }
+}
+// a menu screen (the cell grid) in the option screen's upper box, written into the game's BG3 text
+static void om_draw_menu(void) {
+  menu_build();
+  uint16_t blank = (uint16_t)(g_game->font_base + 0x5C) | 0x2000;
+  for (int r = 0; r < CG_H; r++) {
+    bool ours = (r >= 4 && r <= 16) || (r > 16 && g_cg_lower);   // else the game's: blank rows, the CONTROL PAD box
+    for (int c = 0; c < CG_W; c++) {
+      uint16_t v = g_cg[r][c];
+      *bg3_cell(r, c) = !ours ? om_shadow(r, c) :
+                        v ? (uint16_t)((g_game->font_base + piece_tile(v & 0xFF, g_game)) | (v & 0x1C00) | (v & 0xC000) | 0x2000) : blank;
     }
   }
-  g_tm_sel = cur < g->tm_items ? cur : 0;
-  g_tm_on = 1;
+  om_window_put();   // the same two boxes as the option screen
 }
 // once per frame, after the game's vblank uploads and before the picture is drawn (runner hook)
-static void title_menu_tick(void) {
-  if (!tm_visible()) { g_tm_on = 0; return; }
-  if (!g_tm_on) tm_activate();
-  const GameDef* g = g_game;
-  int n = g->tm_items + 2, top = g->tm_box_top;
-  int bottom = top + 1 + n > g->tm_box_bottom ? top + 1 + n : g->tm_box_bottom;
-  for (int k = 0; k < n || top + 1 + k < bottom; k++) {
-    int row = top + 1 + k;
-    *tm_cell(row, 8) = g_tm_left; *tm_cell(row, 24) = g_tm_right;
-    for (int c = 9; c < 24; c++) *tm_cell(row, c) = g_tm_blank;
-    if (k < g->tm_items) for (int c = 0; c < 13; c++) *tm_cell(row, 11 + c) = g_tm_text[k][c];
-    else if (k < n) {
-      const char* t = k_tm_ours[k - g->tm_items];
-      for (int c = 0; t[c] && c < 13; c++) { int gt = gfont_tile(t[c]); if (gt >= 0) *tm_cell(row, 11 + c) = (uint16_t)((gt - 0x180 + g->font_base) | g_tm_attr); }
-    }
-    if (k == g_tm_sel) *tm_cell(row, 9) = g_tm_dot;
+static void option_menu_tick(void) {
+  if (!om_visible()) {
+    if (g_om_on && g_menu && g_menu_bg3) open_menu(false);   // the game left the screen under our menu
+    g_om_on = 0;
+    return;
   }
-  for (int c = 0; c < 17; c++) *tm_cell(bottom, 8 + c) = g_tm_bottom[c];
-  // the darkened area grows with the box
-  int extra = (bottom - g->tm_box_bottom) * 8;
-  for (int k = 0; k < 2 && extra > 0; k++) {
-    int last = g_tm_win_last[k];
-    if (last < 0) continue;
-    uint8_t* src = &g_snes->ram[(g->tm_window[k] + last * 2) & 0x1ffff];
-    for (int y = last + 1; y <= last + extra && y < 224; y++) {
-      uint8_t* w = &g_snes->ram[(g->tm_window[k] + y * 2) & 0x1ffff];
-      w[0] = src[0]; w[1] = src[1];
+  if (!g_om_on) { g_om_on = 1; g_om_sel = 0; }
+  if (g_menu && g_menu_bg3) { om_draw_menu(); return; }
+  for (int r = 0; r < CG_H; r++) if (r < 4 || r > 16) for (int c = 0; c < 32; c++) *bg3_cell(r, c) = om_shadow(r, c);
+  g_om_tick++;
+  bool blink = (g_om_tick / 16) & 1;
+  uint16_t lab = om_shadow(12, 17) & 0xE000;   // priority and flips of the game's text (palette set per item)
+  // new rows 4-16, from the game's rows 8-16 (-1, -2: our two items on a blank row)
+  static const int8_t k_src[13] = {8, 9, 10, 11, 12, 13, 14, 15, -1, 11, -2, 15, 16};
+  for (int k = 0; k < 13; k++) {
+    int row = 4 + k, src = k_src[k];
+    for (int c = 0; c < 32; c++) *bg3_cell(row, c) = om_shadow(src < 0 ? 11 : src, c);
+    if ((src == 12 || src == 14) && g_om_sel >= 2)   // one of ours is selected: the game's value stops blinking
+      for (int c = 18; c < 28; c++) { uint16_t* p = bg3_cell(row, c); if (((*p >> 10) & 7) == 3) *p &= ~0x1C00; }
+    if (src < 0) {
+      int i = src == -1 ? 0 : 1;
+      om_put(row, 6, i ? "ACHIEVEMENTS" : "PORT SETTINGS", lab | (g_om_sel == 2 + i && blink ? 3 : 2) << 10);
     }
   }
-  // the game's cursor follows ours (its last item while ours is on PC SETTINGS / ACHIEVEMENTS)
-  int gc = g_tm_sel < g->tm_items ? g_tm_sel : g->tm_items - 1;
-  g_snes->ram[g->tm_cursor] = (uint8_t)gc;   // low byte only: the next byte belongs to something else
+  om_window_put();
+  // the game's cursor follows ours (its last item while ours is on one of our rows)
+  g_snes->ram[g_game->tm_cursor] = (uint8_t)(g_om_sel < 2 ? g_om_sel : 1);   // low byte only
 }
-// returns true if the press was taken by the title menu
-static bool title_menu_key(int b, bool down) {
-  if (!g_tm_on || g_menu || b < 0) return false;
-  const GameDef* g = g_game;
-  int n = g->tm_items + 2;
-  bool ours = g_tm_sel >= g->tm_items;
+// returns true if the press was taken by the option menu
+static bool option_menu_key(int b, bool down) {
+  if (!g_om_on || g_menu || b < 0 || !down) return false;
   if (b == BTN_DOWN || b == BTN_UP) {
-    if (down) g_tm_sel = (g_tm_sel + (b == BTN_DOWN ? 1 : n - 1)) % n;
-    return false;   // the game still sees it: its cursor sound and idle timer (its cursor is reset every frame)
+    g_om_sel = (g_om_sel + (b == BTN_DOWN ? 1 : 3)) % 4;
+    return false;   // the game still sees it: its cursor sound (its cursor is set every frame)
   }
-  if (!ours) return false;
-  if (down && (b == BTN_START || b == BTN_A || b == BTN_B)) {
+  if (g_om_sel < 2 || b == BTN_SELECT) return false;   // Select still leaves the option screen
+  if (b == BTN_START || b == BTN_A || b == BTN_B || b == BTN_X || b == BTN_Y) {
     open_menu(true);
-    g_tm_return = 1;
-    if (g_tm_sel == g->tm_items) { g_page = 5; g_sel = 0; }
-    else g_ach_screen = 1;
+    g_menu_bg3 = true;   // drawn by the game, in the option screen's place
+    g_om_return = 1;
+    if (g_om_sel == 2) { g_page = 5; g_sel = 0; }
+    else if (HAS(GF_ACH)) g_ach_screen = 1;
+    else open_menu(false);
   }
-  return true;     // nothing else reaches the game while one of ours is selected
+  return true;   // nothing else reaches the game while one of ours is selected
 }
-// leaving a sub-screen or page: back to the title when that is where it was opened from
+// ---------------------------------------------------------------- the pause menu in a stage, drawn by the game
+// Opening the menu in a side-scrolling stage presses Start for the game: its own pause, a loop that waits
+// for Start again (it dims the picture and pauses the music). While it waits, the menu is written into
+// BG3 -- the HUD's layer, above everything in these stages -- under the HUD rows, with the option screen's
+// font and box tiles copied into BG3 tile slots the picture isn't using. The other layers are drawn at half
+// brightness (colour math) instead of the game's dimming, so the menu stays bright. Closing puts every
+// word back and presses Start for the game again. Where this can't work (Mode 7 stages have no BG3, no
+// free tile slots, the game not pausing), the same menu is drawn over the picture instead.
+enum { SP_OFF, SP_PAUSING, SP_ON, SP_RESUMING };
+static int g_sp, g_sp_timer;
+#define g_sp_inject g_btn_inject                       // buttons pressed for the game while the menu has the input
+static uint8_t* g_sp_snap; static int g_sp_snap_len;  // the game just before it paused: what Save state saves
+static uint16_t g_sp_slot[96], g_sp_slot_save[96][8]; // BG3 tile number holding font tile i, and what was there
+// BG3 as set up at the top of the frame (the HUD) and at the bottom: Empire switches BG3 to another
+// tilemap and scroll below its HUD in mid-frame, so the menu is written into both
+typedef struct { uint16_t map, tiles; int hs, vs; bool wide, high; } Bg3Cfg;
+static Bg3Cfg g_sp_cfg[2], g_sp_bottom;
+static int g_sp_ncfg;
+static uint16_t g_sp_map_adr[2][CG_H][CG_W], g_sp_map_save[2][CG_H][CG_W];
+static Bg3Cfg sp_cfg_now(void) {
+  BgLayer* b = &g_snes->ppu->bgLayer[2];
+  Bg3Cfg c = {b->tilemapAdr, b->tileAdr, b->hScroll, b->vScroll, b->tilemapWider, b->tilemapHigher};
+  return c;
+}
+static int g_bottom_mode;   // the PPU mode at the bottom of the last frame (Mode 7 stages switch to it under the HUD)
+static void hud_lift(void);
+static int g_hc_n;
+static void sp_after_frame(void) {   // in vblank, before the game's NMI
+  g_sp_bottom = sp_cfg_now(); g_bottom_mode = g_snes->ppu->mode;
+  hud_lift();
+  pace_after_frame();
+}
+static struct { bool math[6], add_sub, sub, half; uint8_t fr, fg, fb, clip, prevent; } g_sp_ppu;
+static bool sp_possible(void) {
+  Ppu* p = g_snes->ppu;
+  return g_game->r_inidisp && g_gfont_ok && in_stage() && p->mode == 1 && p->layer[2].mainScreenEnabled && !p->bgLayer[2].bigTiles;
+}
+static bool sp_paused(void) { return in_stage() && (g_snes->ram[g_game->r_inidisp] & 0x8F) == 0x08; }
+static void sp_open(void) {   // called with the menu just opened
+  if (!sp_possible()) return;
+  if (!g_sp_snap) g_sp_snap = malloc(4 * 1024 * 1024);
+  if (!g_sp_snap) return;
+  g_sp_snap_len = snes_saveState(g_snes, g_sp_snap);
+  g_menu_bg3 = true; g_sp = SP_PAUSING; g_sp_timer = 0; g_sp_inject = 1 << BTN_START;
+}
+static int sp_mapword(const Bg3Cfg* b, int c, int r) {   // VRAM word of the BG3 tilemap cell shown at screen cell c, r
+  int lx = (c * 8 + b->hs) & 0x3ff, ly = (r * 8 + b->vs) & 0x3ff;
+  int adr = b->map + (((ly >> 3) & 0x1f) << 5 | ((lx >> 3) & 0x1f));
+  if ((lx & 0x100) && b->wide) adr += 0x400;
+  if ((ly & 0x100) && b->high) adr += b->wide ? 0x800 : 0x400;
+  return adr & 0x7fff;
+}
+// 96 BG3 tile slots whose VRAM no tilemap, tile, or sprite graphics of the current picture uses
+static bool sp_find_slots(void) {
+  Ppu* p = g_snes->ppu;
+  static uint8_t used[0x8000];
+  memset(used, 0, sizeof used);
+  #define MARK(a, n) for (int k_ = 0; k_ < (n); k_++) used[((a) + k_) & 0x7fff] = 1
+  for (int l = 0; l < 3; l++) {
+    BgLayer* b = &p->bgLayer[l];
+    int words = l < 2 ? 16 : 8, n = 0x400 * (b->tilemapWider ? 2 : 1) * (b->tilemapHigher ? 2 : 1);
+    MARK(b->tilemapAdr, n);
+    for (int i = 0; i < n; i++) {
+      int t = p->vram[(b->tilemapAdr + i) & 0x7fff] & 0x3ff;
+      MARK(b->tileAdr + t * words, words);
+    }
+  }
+  if (g_sp_ncfg > 1) {   // BG3 below the HUD
+    const Bg3Cfg* b = &g_sp_cfg[1];
+    int n = 0x400 * (b->wide ? 2 : 1) * (b->high ? 2 : 1);
+    MARK(b->map, n);
+    for (int i = 0; i < n; i++) MARK(b->tiles + (p->vram[(b->map + i) & 0x7fff] & 0x3ff) * 8, 8);
+  }
+  MARK(p->objTileAdr1, 0x1000); MARK(p->objTileAdr2, 0x1000);
+  #undef MARK
+  int got = 0;
+  for (int t = 0; t < 1024 && got < 96; t++) {
+    int a = p->bgLayer[2].tileAdr + t * 8, free = 1;
+    for (int k = 0; k < 8 && free; k++) if (used[(a + k) & 0x7fff]) free = 0;
+    if (free) g_sp_slot[got++] = (uint16_t)t;
+  }
+  return got == 96;
+}
+static bool sp_configs(void) {   // the two BG3 set-ups; false if they don't share the tile graphics
+  g_sp_cfg[0] = sp_cfg_now(); g_sp_cfg[1] = g_sp_bottom;
+  g_sp_ncfg = memcmp(&g_sp_cfg[0], &g_sp_cfg[1], sizeof(Bg3Cfg)) ? 2 : 1;
+  return g_sp_cfg[0].tiles == g_sp_cfg[1].tiles;
+}
+static void sp_setup(void) {   // the game has paused: take the slots and save everything we'll write over
+  Ppu* p = g_snes->ppu;
+  for (int i = 0; i < 96; i++) for (int k = 0; k < 8; k++) {
+    int a = (p->bgLayer[2].tileAdr + g_sp_slot[i] * 8 + k) & 0x7fff;
+    g_sp_slot_save[i][k] = p->vram[a];
+    p->vram[a] = g_gfont[i * 16 + 2 * k] | g_gfont[i * 16 + 2 * k + 1] << 8;
+  }
+  for (int k = 0; k < g_sp_ncfg; k++) for (int r = 0; r < CG_H; r++) for (int c = 0; c < CG_W; c++) {
+    g_sp_map_adr[k][r][c] = (uint16_t)sp_mapword(&g_sp_cfg[k], c, r);
+    g_sp_map_save[k][r][c] = p->vram[g_sp_map_adr[k][r][c]];
+  }
+  memcpy(g_sp_ppu.math, p->mathEnabled, sizeof g_sp_ppu.math);
+  g_sp_ppu.add_sub = p->addSubscreen; g_sp_ppu.sub = p->subtractColor; g_sp_ppu.half = p->halfColor;
+  g_sp_ppu.fr = p->fixedColorR; g_sp_ppu.fg = p->fixedColorG; g_sp_ppu.fb = p->fixedColorB;
+  g_sp_ppu.clip = p->clipMode; g_sp_ppu.prevent = p->preventMathMode;
+}
+static void sp_restore(void) {
+  Ppu* p = g_snes->ppu;
+  for (int i = 0; i < 96; i++) for (int k = 0; k < 8; k++) p->vram[(p->bgLayer[2].tileAdr + g_sp_slot[i] * 8 + k) & 0x7fff] = g_sp_slot_save[i][k];
+  for (int k = g_sp_ncfg - 1; k >= 0; k--) for (int r = 0; r < CG_H; r++) for (int c = 0; c < CG_W; c++) p->vram[g_sp_map_adr[k][r][c]] = g_sp_map_save[k][r][c];
+  memcpy(p->mathEnabled, g_sp_ppu.math, sizeof g_sp_ppu.math);
+  p->addSubscreen = g_sp_ppu.add_sub; p->subtractColor = g_sp_ppu.sub; p->halfColor = g_sp_ppu.half;
+  p->fixedColorR = g_sp_ppu.fr; p->fixedColorG = g_sp_ppu.fg; p->fixedColorB = g_sp_ppu.fb;
+  p->clipMode = g_sp_ppu.clip; p->preventMathMode = g_sp_ppu.prevent;
+}
+static void sp_draw(void) {   // the menu under the HUD rows (0-4 stay the game's); BG3 outside the boxes stays too
+  Ppu* p = g_snes->ppu;
+  menu_build();
+  uint16_t blank = g_sp_slot[0x5C] | 0x2000;
+  for (int r = 5; r < CG_H; r++) for (int c = 0; c < CG_W; c++) {
+    uint16_t v = g_cg[r][c];
+    bool inbox = false;
+    for (int b = 0; b < g_cg_nbox && !inbox; b++)
+      inbox = c >= g_cg_box[b].c && c < g_cg_box[b].c + g_cg_box[b].w && r >= g_cg_box[b].r && r < g_cg_box[b].r + g_cg_box[b].h;
+    for (int k = 0; k < g_sp_ncfg; k++) {
+      uint16_t* w = &p->vram[g_sp_map_adr[k][r][c]];
+      if (v) *w = (uint16_t)(g_sp_slot[piece_tile(v & 0xFF, g_font_game)] | (v & 0x1C00) | (v & 0xC000) | 0x2000);
+      else *w = inbox ? blank : g_sp_map_save[k][r][c];
+    }
+  }
+  for (int l = 0; l < 6; l++) p->mathEnabled[l] = l != 2;   // everything but BG3 at half brightness
+  p->addSubscreen = false; p->subtractColor = false; p->halfColor = true;
+  p->fixedColorR = p->fixedColorG = p->fixedColorB = 0;
+  p->clipMode = 0; p->preventMathMode = 0;
+  p->brightness = 15;
+}
+// once per frame, after the game's vblank uploads (runner hook)
+static void stage_menu_tick(void) {
+  switch (g_sp) {
+    case SP_PAUSING:
+      g_sp_timer++;
+      if (g_sp_timer == 3) g_sp_inject = 0;
+      if (!g_menu) { g_sp_inject = 0; g_sp = sp_paused() ? SP_RESUMING : SP_OFF; g_sp_timer = 0; if (g_sp) g_sp_inject = 1 << BTN_START; break; }
+      if (g_sp_timer > 3 && sp_paused()) {
+        if (sp_configs() && sp_find_slots()) { sp_setup(); g_sp = SP_ON; sp_draw(); }
+        else { g_sp = SP_RESUMING; g_sp_timer = 0; g_sp_inject = 1 << BTN_START; g_menu_bg3 = false; }   // drawn over the picture
+      } else if (g_sp_timer > 40) { g_sp = SP_OFF; g_menu_bg3 = false; }   // it didn't pause: drawn over the picture
+      break;
+    case SP_ON:
+      if (!sp_paused()) { g_sp = SP_OFF; break; }   // a state was loaded / the game reset: nothing of ours is left
+      if (g_menu && g_menu_bg3) { sp_draw(); break; }
+      sp_restore();
+      g_sp = SP_RESUMING; g_sp_timer = 0; g_sp_inject = 1 << BTN_START;
+      if (g_menu) g_menu_bg3 = false;   // the menu continues over the picture (e.g. after a game switch)
+      break;
+    case SP_RESUMING:
+      if (++g_sp_timer == 3) { g_sp_inject = 0; g_sp = SP_OFF; }
+      break;
+  }
+}
+static void open_pause(void) { open_menu(true); sp_open(); }
+
+// ---------------------------------------------------------------- achievement pop-up and timer, drawn by the game
+// In the side-scrolling stages BG3 also holds the HUD's font: the option screen's glyphs (letters,
+// digits, punctuation, box pieces) in the same order, at a tile number that depends on the stage. The
+// pop-up and the speedrun timer are written into BG3 under the HUD with those tiles, every frame after the
+// game's uploads, and every frame after the picture is drawn the game's own words go back (hud_lift), so
+// snapshots, rewind and save states never contain them. Elsewhere (title, Mode 7 stages) they are still
+// drawn over the picture (draw_hud).
+static int g_hf_base = -1;           // BG3 tile number of the font's first tile ($180 in SSW) in this stage
+static int g_hf_wait;
+// g_hud_ingame (declared with draw_hud): drawn by the game this frame, 1 pop-up, 2 timer
+static struct { uint16_t adr, orig, wrote; } g_hc[2 * 8 * CG_W];   // cells written this frame (g_hc_n of them)
+static bool hf_glyph_at(int t, int off) {   // BG3 tile t holds the captured font's tile off
+  Ppu* p = g_snes->ppu;
+  for (int k = 0; k < 8; k++)
+    if (p->vram[(p->bgLayer[2].tileAdr + t * 8 + k) & 0x7fff] != (g_gfont[off * 16 + 2 * k] | g_gfont[off * 16 + 2 * k + 1] << 8)) return false;
+  return true;
+}
+static bool hf_find(void) {   // is the font (still) there? Searched again at most every half second
+  if (g_hf_base >= 0 && hf_glyph_at(g_hf_base + 0x1A, 0x1A) && hf_glyph_at(g_hf_base + 0x34, 0x34)) return true;
+  g_hf_base = -1;
+  if (g_hf_wait > 0) { g_hf_wait--; return false; }
+  g_hf_wait = 30;
+  for (int t = 0x1A; t < 1024 - 0x40; t++)
+    if (hf_glyph_at(t, 0x1A) && hf_glyph_at(t + 0x19, 0x33) && hf_glyph_at(t + 0x1A, 0x34) && hf_glyph_at(t + 0x24, 0x3E)) { g_hf_base = t - 0x1A; return true; }
+  return false;
+}
+static void hud_build(void) {   // into the cell grid, rows 4-9
+  cg_clear();
+  g_hud_ingame = 0;
+  if (cfg.timer) {   // row 4, right: the split (or stage time), then the run time
+    char run[24], st[24]; uint32_t col, scol; int show_split;
+    if (extras_timer_text(run, sizeof run, st, sizeof st, &col, &scol, &show_split)) {
+      int rp = col == 0xffffff ? PAL_WHITE : PAL_BOX;
+      int sp = scol == 0x60e070 ? PAL_GREEN : scol == 0xf06060 ? PAL_GOLD : scol == 0xffe060 ? PAL_WHITE : PAL_BOX;
+      int rc = 30 - cg_len(run);
+      cg_text(rc, 4, run, rp);
+      if (st[0]) cg_text(rc - 2 - cg_len(st), 4, st, sp);
+      g_hud_ingame |= 2;
+    }
+  }
+  if (g_toast_id >= 0) {   // rows 5-8: the game's box, "ACHIEVEMENT" in gold, the name in green
+    const char *t, *d; ach_get(g_toast_id, &t, &d);
+    char ttl[32]; snprintf(ttl, sizeof ttl, "%.26s", t);
+    int w = (cg_len(ttl) > 11 ? cg_len(ttl) : 11) + 4, c = (CG_W - w) / 2;
+    cg_box(c, 5, w, 4);
+    cg_text_c(6, "ACHIEVEMENT", PAL_GOLD);
+    cg_text_c(7, ttl, PAL_GREEN);
+    g_hud_ingame |= 1;
+  }
+}
+// once per frame after the game's vblank uploads (runner hook): the grid's cells into both BG3 set-ups
+static void hud_tick(void) {
+  hud_lift();   // normally already done after the last picture (not when a frame was only redrawn)
+  if (g_menu || g_sp != SP_OFF || !g_gfont_ok || !in_stage()) { g_hud_ingame = 0; return; }
+  Ppu* p = g_snes->ppu;
+  if (p->mode != 1 || g_bottom_mode != 1 || !p->layer[2].mainScreenEnabled || p->bgLayer[2].bigTiles || !hf_find()) { g_hud_ingame = 0; return; }
+  hud_build();
+  Bg3Cfg cfg2[2] = {sp_cfg_now(), g_sp_bottom};
+  int ncfg = memcmp(&cfg2[0], &cfg2[1], sizeof(Bg3Cfg)) ? 2 : 1;
+  for (int r = 4; r < 10; r++) for (int c = 0; c < CG_W; c++) {
+    uint16_t v = g_cg[r][c];
+    if (!v) continue;
+    uint16_t word = (uint16_t)((g_hf_base + piece_tile(v & 0xFF, g_game)) | (v & 0x1C00) | (v & 0xC000) | 0x2000);
+    for (int k = 0; k < ncfg && g_hc_n < (int)(sizeof g_hc / sizeof g_hc[0]); k++) {
+      uint16_t adr = (uint16_t)sp_mapword(&cfg2[k], c, r);
+      if (k == 1 && adr == g_hc[g_hc_n - 1].adr) continue;
+      g_hc[g_hc_n].adr = adr; g_hc[g_hc_n].orig = p->vram[adr]; g_hc[g_hc_n].wrote = word;
+      p->vram[adr] = word; g_hc_n++;
+    }
+  }
+}
+static void hud_lift(void) {   // the game's words back (unless the game has written there itself since)
+  Ppu* p = g_snes->ppu;
+  for (int i = g_hc_n - 1; i >= 0; i--) if (p->vram[g_hc[i].adr] == g_hc[i].wrote) p->vram[g_hc[i].adr] = g_hc[i].orig;
+  g_hc_n = 0;
+}
+static int sp_saved_state(uint8_t* out) {
+  if (g_sp != SP_ON || !g_sp_snap) return 0;
+  memcpy(out, g_sp_snap, g_sp_snap_len);
+  return g_sp_snap_len;
+}
+static void menus_after_vblank(void) { option_menu_tick(); stage_menu_tick(); hud_tick(); pace_tick(); }
+
+// The games' own title menu and option screen only take Start (and Select to leave the option screen).
+// There the usual buttons work too: SNES B (pad A, keyboard Z) is Start, SNES A (pad B, keyboard X)
+// is Select on the option screen -- the same confirm / back as in the port's pages.
+static int title_button_map(int b) {
+  uint8_t* r = g_snes->ram;
+  if (g_menu || game_mode(r) != g_game->title_mode || game_scene(r) != g_game->title_scene) return b;
+  if (b == BTN_B) return BTN_START;
+  if (b == BTN_A && g_om_on) return BTN_SELECT;
+  return b;
+}
+
+// leaving a sub-screen or page: back to the option screen when that is where it was opened from
 static void menu_escape(void) {
-  if (g_ach_screen) { g_ach_screen = 0; if (g_tm_return && g_page == 0) open_menu(false); }
+  if (g_ach_screen) { g_ach_screen = 0; if (g_om_return && g_page == 0) open_menu(false); }
   else if (g_ctrl_screen) g_ctrl_screen = 0;
   else if (g_stats_screen) g_stats_screen = 0;
-  else if (g_page == 5 && g_tm_return) open_menu(false);
+  else if (g_page == 5 && g_om_return) open_menu(false);
   else if (g_page) menu_back();
   else open_menu(false);
+}
+
+// ---------------------------------------------------------------- scripted test runs
+// SSW_AUTOTEST="w600 k:Return w30 shot:title.ppm q" plays a script instead of a person: wN waits N frames,
+// k:<SDL key name> taps a key (_ for a space in the name), shot:<file> writes the next normal (not
+// widescreen) picture, menus included, as a 512x448 PPM (widescreen: its own width x 224), toast:<n>
+// shows achievement n's pop-up, q quits. For checking the menus without a screen.
+static const char* g_at;
+static int g_at_wait;
+static SDL_Keycode g_at_up;
+static char g_at_shot[512];
+static void at_key(SDL_Keycode k, bool down) {
+  SDL_Event e; memset(&e, 0, sizeof e);
+  e.type = down ? SDL_KEYDOWN : SDL_KEYUP; e.key.state = down ? SDL_PRESSED : SDL_RELEASED; e.key.keysym.sym = k;
+  SDL_PushEvent(&e);
+}
+static void autotest_tick(void) {
+  if (g_at_up) { at_key(g_at_up, false); g_at_up = 0; return; }
+  if (!g_at || g_at_shot[0]) return;
+  if (g_at_wait > 0) { g_at_wait--; return; }
+  while (*g_at == ' ') g_at++;
+  if (!*g_at) { g_at = NULL; return; }
+  char tok[512]; int n = 0;
+  while (g_at[n] && g_at[n] != ' ' && n < 511) { tok[n] = g_at[n] == '_' ? ' ' : g_at[n]; n++; }
+  tok[n] = 0; g_at += n;
+  if (tok[0] == 'w') g_at_wait = atoi(tok + 1);
+  else if (!strncmp(tok, "k:", 2)) { g_at_up = SDL_GetKeyFromName(tok + 2); at_key(g_at_up, true); }
+  else if (!strncmp(tok, "shot:", 5)) snprintf(g_at_shot, sizeof g_at_shot, "%s", tok + 5);
+  else if (!strncmp(tok, "toast:", 6)) { g_toast_id = atoi(tok + 6); g_toast_timer = 240; }   // show an achievement pop-up
+  else if (!strcmp(tok, "q")) g_quit = true;
+}
+static void autotest_shot_wide(const uint32_t* wb, int stride, int x0, int w) {   // the widescreen picture, w x 224
+  if (!g_at_shot[0]) return;
+  FILE* f = fopen(g_at_shot, "wb");
+  if (f) {
+    fprintf(f, "P6 %d 224 255\n", w);
+    for (int y = 0; y < 224; y++) for (int x = 0; x < w; x++) { uint32_t c = wb[y * stride + x0 + x]; fputc(c >> 16, f); fputc(c >> 8, f); fputc(c, f); }
+    fclose(f);
+  }
+  g_at_shot[0] = 0;
+}
+static void autotest_shot(void) {
+  if (!g_at_shot[0]) return;
+  FILE* f = fopen(g_at_shot, "wb");
+  if (f) {
+    fprintf(f, "P6 512 448 255\n");
+    const uint32_t* p = (const uint32_t*)g_pixels + 16 * 512;
+    for (int i = 0; i < 512 * 448; i++) { fputc(p[i] >> 16, f); fputc(p[i] >> 8, f); fputc(p[i], f); }
+    fclose(f);
+  }
+  g_at_shot[0] = 0;
 }
 
 // ---------------------------------------------------------------- main
@@ -1330,8 +1799,9 @@ int main(int argc, char** argv) {
   g_game = start;
   crashlog_init(NULL, g_base, settings_summary);
   if (getenv("SSW_TEST_CRASH")) g_test_crash = 1200;
+  g_at = getenv("SSW_AUTOTEST");
   steam_init(g_base);
-  g_runner_after_vblank = title_menu_tick;
+  g_runner_after_vblank = menus_after_vblank;
   load_game(start);
 
   g_win = SDL_CreateWindow(g_game->name, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
@@ -1372,6 +1842,7 @@ int main(int argc, char** argv) {
       load_game(g); cfg_save();
       if (dev) SDL_ClearQueuedAudio(dev);
     }
+    autotest_tick();
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
       switch (ev.type) {
@@ -1384,7 +1855,7 @@ int main(int argc, char** argv) {
             if (down && bt != SDL_CONTROLLER_BUTTON_GUIDE) { bind_pad(g_ctrl_sel, bt); g_ctrl_wait = 0; cfg_save(); }
             break;
           }
-          if (bt == SDL_CONTROLLER_BUTTON_GUIDE && down) { open_menu(!g_menu); break; }
+          if (bt == SDL_CONTROLLER_BUTTON_GUIDE && down) { if (g_menu) open_menu(false); else open_pause(); break; }
           if (g_menu) {
             if (!down) break;
             if (bt == SDL_CONTROLLER_BUTTON_DPAD_UP) menu_key(-1, 0, false);
@@ -1397,12 +1868,13 @@ int main(int argc, char** argv) {
             break;
           }
           int b = pad_to_btn(bt);
-          if (start_opens_pause(b, down)) { open_menu(true); break; }
-          if (title_menu_key(b, down)) break;
+          if (start_opens_pause(b, down)) { open_pause(); break; }
+          if (option_menu_key(b, down)) break;
+          b = title_button_map(b);
           if (b >= 0) set_btn(b, down);
           SDL_GameController* gc = SDL_GameControllerFromInstanceID(ev.cbutton.which);
           if (down && gc && SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_BACK) &&
-              SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_START)) open_menu(true);
+              SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_START)) open_pause();
           break;
         }
         case SDL_KEYDOWN: case SDL_KEYUP: {
@@ -1418,7 +1890,7 @@ int main(int argc, char** argv) {
             break;
           }
           if (down && k == SDLK_ESCAPE && !ev.key.repeat) {
-            if (g_menu) menu_escape(); else open_menu(true);
+            if (g_menu) menu_escape(); else open_pause();
             break;
           }
           if (g_menu) {
@@ -1428,11 +1900,13 @@ int main(int argc, char** argv) {
             else if (k == SDLK_LEFT) menu_key(0, -1, false);
             else if (k == SDLK_RIGHT) menu_key(0, 1, false);
             else if (k == SDLK_RETURN || k == SDLK_z || k == SDLK_SPACE) menu_key(0, 0, true);
+            else if (k == SDLK_x || k == SDLK_BACKSPACE) menu_escape();   // back, like the pad's B
             break;
           }
           int b = key_to_btn(k);
-          if (!ev.key.repeat && start_opens_pause(b, down)) { open_menu(true); break; }
-          if (!ev.key.repeat && title_menu_key(b, down)) break;
+          if (!ev.key.repeat && start_opens_pause(b, down)) { open_pause(); break; }
+          if (!ev.key.repeat && option_menu_key(b, down)) break;
+          b = title_button_map(b);
           if (b >= 0) set_btn(b, down);
           if (k == SDLK_TAB) fast = down;
           if (k == SDLK_BACKSPACE) g_rewinding = down;
@@ -1454,7 +1928,7 @@ int main(int argc, char** argv) {
         }
       }
     }
-    if (!g_menu) {
+    if (!MENU_OVERLAY) {   // the game keeps running under a menu it draws itself (it gets no input then)
       for (int i = 0; i < SDL_NumJoysticks(); i++) {   // left stick as d-pad
         SDL_GameController* gc = SDL_GameControllerFromInstanceID(SDL_JoystickGetDeviceInstanceID(i));
         if (!gc) continue;
@@ -1476,7 +1950,7 @@ int main(int argc, char** argv) {
       g_snes->ppu->m7frameUsed = false;
       if (redraw_only && frames == 0) { uint16_t keep = g_btn_down; g_btn_down = 0; push_buttons(); g_btn_down = keep; if (HAS(GF_WIDESCREEN)) { extern int g_ws_spawn_wide, g_ws_objects; g_ws_spawn_wide = cfg.wide_spawn == 1; g_ws_objects = cfg.wide_spawn != 2; ws_update(wide_extra()); } runner_frame(g_snes); }
       if (redraw_only) frames = 0;   // holding rewind with nothing left: pause
-      for (int i = 0; i < frames; i++) { if (cfg.rewind) rewind_record(); g_snes->ppu->noSpriteLimit = cfg.nolimit; { extern int g_dsp_interp; g_dsp_interp = cfg.interp; } push_buttons(); apply_dev_flags(); if (HAS(GF_RESTORED)) restore_update(cfg.restored); update_overclock(); steam_tick(); if (HAS(GF_WIDESCREEN)) { extern int g_ws_spawn_wide, g_ws_objects; g_ws_spawn_wide = cfg.wide_spawn == 1; g_ws_objects = cfg.wide_spawn != 2; ws_update(wide_extra()); } runner_frame(g_snes); after_frame_buttons(); autosave_tick(); if (HAS(GF_ACH)) ach_update(g_port_touched || cfg.dev || g_rewound); rumble_tick(); if (HAS(GF_RESTORED)) restore_tick(); trilogy_tick(); extras_frame(g_port_touched || cfg.dev || g_rewound); crashlog_frame(); if (g_test_crash && --g_test_crash == 0) *(volatile int*)0 = 1; }
+      for (int i = 0; i < frames; i++) { bool sp = g_sp != SP_OFF; if (cfg.rewind && !sp) rewind_record(); g_snes->ppu->noSpriteLimit = cfg.nolimit; { extern int g_dsp_interp; g_dsp_interp = cfg.interp; } push_buttons(); apply_dev_flags(); if (HAS(GF_RESTORED)) restore_update(cfg.restored); update_overclock(); steam_tick(); if (HAS(GF_WIDESCREEN)) { extern int g_ws_spawn_wide, g_ws_objects; g_ws_spawn_wide = cfg.wide_spawn == 1; g_ws_objects = cfg.wide_spawn != 2; ws_update(wide_extra()); } runner_frame(g_snes); sp_after_frame(); after_frame_buttons(); if (!sp) { damage_tick(); autosave_tick(); if (HAS(GF_ACH)) ach_update(g_port_touched || cfg.dev || g_rewound); rumble_tick(); if (HAS(GF_RESTORED)) restore_tick(); trilogy_tick(); extras_frame(g_port_touched || cfg.dev || g_rewound); } crashlog_frame(); if (g_test_crash && --g_test_crash == 0) *(volatile int*)0 = 1; }
       if (dev && !fast) {
         int n = SAMPLE_RATE / 60;
         snes_setSamples(g_snes, g_audio, n);
@@ -1489,8 +1963,8 @@ int main(int argc, char** argv) {
     if (g_report_timer > 0) g_report_timer--;
     // widescreen frames come from the PPU's wide buffer (the menu always uses the normal frame)
     int want_extra = wide_extra();
-    bool hires = cfg.m7 && g_snes->ppu->m7hiresK && g_snes->ppu->m7frameUsed && !g_menu;
-    bool wide = want_extra > 0 && !g_menu && !hires;
+    bool hires = cfg.m7 && g_snes->ppu->m7hiresK && g_snes->ppu->m7frameUsed && !MENU_OVERLAY;
+    bool wide = want_extra > 0 && !MENU_OVERLAY && !hires;
     SDL_Texture* t;
     SDL_Rect src = {0, 16, 512, 448};
     int ww, wh;
@@ -1522,15 +1996,17 @@ int main(int argc, char** argv) {
       title_credit(wb, WW, PPU_WIDE_MAX, 0, 1);
       color_apply(wb + PPU_WIDE_MAX - want_extra, WW, 256 + 2 * want_extra, 224);
       if (HAS(GF_RESTORED)) restore_draw_walls(wb, WW, PPU_WIDE_MAX, 0, 1, -act, 256 + act);
+      autotest_shot_wide(wb, WW, PPU_WIDE_MAX - want_extra, 256 + 2 * want_extra);
       SDL_UpdateTexture(t, NULL, wb, WW * 4);
       src = (SDL_Rect){PPU_WIDE_MAX - want_extra, 0, 256 + 2 * want_extra, 224};
       ar = (256.0 + 2 * want_extra) * pixel_aspect() / 224.0;
     } else {
       snes_setPixels(g_snes, g_pixels);
       title_credit((uint32_t*)g_pixels, 512, 0, 16, 2);
-      if (!g_menu) color_apply((uint32_t*)g_pixels + 16 * 512, 512, 512, 448);
+      if (!MENU_OVERLAY) color_apply((uint32_t*)g_pixels + 16 * 512, 512, 512, 448);
       if (HAS(GF_RESTORED)) restore_draw_walls((uint32_t*)g_pixels, 512, 0, 16, 2, 0, 256);
-      if (g_menu) draw_menu();
+      if (MENU_OVERLAY) draw_menu();
+      autotest_shot();
       t = tex[cfg.smooth ? 1 : 0];
       SDL_UpdateTexture(t, NULL, g_pixels, 512 * 4);
       ar = cfg.aspect == ASPECT_4_3 ? 4.0 / 3.0 : cfg.aspect == ASPECT_8_7 ? 256.0 / 224.0 : (double)ww / wh;

@@ -1,0 +1,28 @@
+# Super Return of the Jedi port: song -> MSU-1 track number
+# Matches the cartridge MSU-1 patch by Conn & Relikk (ssw3_msu): its track N is the game's own
+# song number N, so that pack's PCM files (ssw3_msu1-N.pcm) work as they are.
+# The PCM for track N is any file in this folder ending in "-N.pcm".
+#   songvar AAAA          where the game keeps its current song number (don't change)
+#   song SS N [once]      game song SS (hex) plays track N; "once" = no looping (jingles),
+#                         "finish" = no looping, and the next song waits until it ends
+# Songs the game plays that are missing here get logged to unmapped.txt.
+songvar 01EA
+song 00  0 once
+song 01  1 once
+song 02  2
+song 03  3
+song 04  4
+song 05  5
+song 06  6
+song 07  7
+song 08  8
+song 09  9
+song 0A 10 once
+song 0B 11 finish
+song 0C 12 once
+song 0D 13
+song 0E 14
+song 0F 15
+song 10 16
+song 11 17 once
+song 12 18 once

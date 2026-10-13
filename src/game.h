@@ -39,16 +39,21 @@ typedef struct GameDef {
   uint8_t end_mode, end_scene;       // the ending / credits: game beaten
   uint16_t font_vram, font_base;     // title-screen font: BG3 tile data (word address) and the tile that is
                                      // Super Star Wars' $180 (same typeface and glyph order in every game)
-  // title-screen menu box (BG3 tilemap rows; the port adds PC SETTINGS and ACHIEVEMENTS to it)
-  uint16_t tm_cursor;                // WRAM word: the game's selected item
-  uint8_t tm_items, tm_first_row;    // the game's items, on every second row from tm_first_row
-  uint8_t tm_box_top, tm_box_bottom; // border rows
-  uint16_t tm_window[2];             // WRAM per-line window tables (2 bytes a line) that darken the box
+  // title screen and GAME OPTION MENU (BG3 text; the port adds PC SETTINGS and ACHIEVEMENTS to the option menu)
+  uint16_t tm_cursor;                // WRAM word: the selected item (title menu and option menu)
+  uint16_t tm_window[2];             // WRAM per-line window tables (2 bytes a line) that darken the boxes
   uint8_t play_modes[6];             // GameMode values that are gameplay (0 = unused)
   const uint8_t (*stages)[2];        // play order (mode, scene) for continue / level numbers
   const char* const* stage_names;
   int nstages;
   unsigned features;
+  uint32_t bg3_shadow;               // WRAM copy of the BG3 tilemap (32x32 words) the game uploads to VRAM $0800
+  uint16_t r_inidisp;                // WRAM byte the game copies to INIDISP ($2100); brightness 8 while paused
+  uint8_t t_box[5];                  // its menu pieces, as offsets from the font's first tile ($180 in SSW):
+                                     // heading underline, box side, box corner, box edge, dot cursor
+  uint16_t r_step_flag;              // WRAM byte the main loop sets when a step's sprites are ready and the NMI
+                                     // clears after uploading them; the Mode 7 stages wait on it (0 = unknown)
+  const uint8_t (*paces)[3];         // {mode, scene, frames}: those stages' usual frames per step, 0-ended
 } GameDef;
 
 extern const GameDef g_ssw, g_esb, g_rotj;

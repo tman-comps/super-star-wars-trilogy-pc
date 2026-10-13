@@ -33,6 +33,12 @@ No menu code in `src/main_sdl.c` was touched (another session is rewriting it).
 - Modes: 04 side-scrolling, 06 cutscenes/title, 08 stage card + hero select, 0A Death Star reactor run,
   0C Falcon space battle, 0E opening crawl, 12 Endor speeder bikes, 14 landspeeder / Death Star surface.
   `play_modes` grew from 4 to 6 entries in game.h for this.
+- Menu fields from `main` (merged): bg3_shadow $7F:1440 (BG3 tilemap copy; Jedi's BG3 map is at VRAM
+  **$1000**, not $0800 like the others, so main_sdl's `vram[0x800 + ...]` font/title checks don't match
+  Jedi yet and its option-screen rows and in-stage pause menu stay off), r_inidisp $7B (0F, 08 when
+  paused, checked), t_box as Empire's (title box side/corner/edge = font+$56/$57/$58), r_step_flag
+  $0B59 (Empire's $0BB3 by xmatch; the mode 12 handler waits on it), paces left to automatic measuring.
+- MSU: `msu-rotj/` came with `main`; GF_MSU is not set yet (the MSU session keys on song number $01EA).
 - Font: BG3 tiles at VRAM $4000, 'A' = tile $11A, so font_base $100 (O = $134, blank = $15C).
 - Title menu box: rows 13-19, items START GAME / OPTION MENU / PASSWORD on rows 14/16/18, columns 11+.
   Cursor variable and window tables not found yet, so `tm_items = 0` (the port leaves the title alone).

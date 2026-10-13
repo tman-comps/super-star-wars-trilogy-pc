@@ -1,22 +1,27 @@
 # Super Star Wars port: song -> MSU-1 track number
-# format:  <module hex> <track hex> <MSU track number>   # where it first plays
-# The PCM for track N is any file in this folder ending in "-N.pcm" (e.g. ssw-5.pcm).
-# Renumber the third column to match whichever MSU-1 pack you use. Songs the game plays
-# that are missing here get logged to unmapped.txt so you can add them.
-8F 03  1   # title / intro sequence
-8F 04  2   # title / intro sequence
-8F 02  3   # title / intro sequence
-02 02  4   # opening crawl
-16 03  5   # Dune Sea
-12 02  6   # Dune Sea
-18 04  7   # Dune Sea
-18 06  8   # cutscene
-06 02  9   # landspeeder
-04 02 10   # outside the Sandcrawler
-18 03 11   # inside the Sandcrawler
-0A 02 12   # Mos Eisley
-08 02 13   # cantina
-22 04 14   # cutscene
-22 03 15   # trench run
-0C 02 16   # ending
-1A 05 17   # cutscene
+# Matches the cartridge MSU-1 patch by Conn & Relikk (ssw1_msu1): its track N is the game's own
+# song number N, so that pack's PCM files (ssw1_msu1-N.pcm) work as they are.
+# The PCM for track N is any file in this folder ending in "-N.pcm".
+#   songvar AAAA          where the game keeps its current song number (don't change)
+#   song SS N [once]      game song SS (hex) plays track N; "once" = no looping (jingles),
+#                         "finish" = no looping, and the next song waits until it ends
+# Songs the game plays that are missing here get logged to unmapped.txt.
+songvar 08DD
+song 00  0 once     # lost a life
+song 01  1 once     # opening crawl
+song 02  2          # Sandcrawler
+song 03  3          # landspeeder, X-wing
+song 04  4          # Mos Eisley cantina
+song 05  5          # main theme: Land of the Banthas, Mos Eisley, Death Star
+song 06  6          # title screen, ending
+song 07  7 once     # intro (LucasArts logo)
+song 08  8 once     # intro
+song 09  9          # Dune Sea
+song 0A 10
+song 0B 11 finish   # stage start fanfare
+song 0C 12 once
+song 0D 13          # cutscene
+song 0E 14
+song 0F 15 once
+song 10 16 once     # ending
+song 11 17 once     # ending

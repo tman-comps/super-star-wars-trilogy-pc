@@ -19,13 +19,13 @@ All three games run in one program as a trilogy (after one game's ending the nex
 - **Native speed, faithful gameplay.** The recompiled code is checked frame for frame against the reference interpreter on every stage.
 - **Widescreen** 16:10, 16:9 and 21:9 for the side-scrolling and Mode 7 stages. The extra columns are rebuilt from each game's level data. A *Wide enemies* setting chooses between enemies shown in the wide view (default), the stricter original 4:3 behaviour, or early spawning.
 - **Mode 7 detail.** The speeder and flight stages are redrawn at 2× or 4× resolution.
-- **Remove slowdown.** The SNES versions lag in busy scenes; this removes it in the side-scrolling stages. The speeder and flight stages keep their original speed, which their difficulty was balanced for.
-- **Pause menu** on Start: Resume, Restart stage, Continue (auto-save from the start of the last stage), Options, Achievements, Stats, Save/Load state, Quit to title. *PC SETTINGS* and *ACHIEVEMENTS* are also added to each game's own title-screen menu, drawn with the game's own font.
+- **Remove slowdown.** The SNES versions lag in busy scenes; this removes it. The speeder and flight stages always ran slower than full speed and were balanced for that, so there the game keeps its usual pace and the faster processor only helps a step that would otherwise lag. A *Speeder damage* setting (Gameplay) halves the damage taken in those stages; it's on by default.
+- **Menus inside the games.** *PORT SETTINGS* and *ACHIEVEMENTS* are rows in each game's own GAME OPTION MENU, and the settings pages appear in that screen's own box. Start in a stage opens a **pause menu** inside the game's own pause (Resume, Restart stage, Continue from the start of the last stage, Options, Achievements, Stats, Save/Load state, Quit to title). The game draws all of this itself, with its own font, boxes and colours. Achievement pop-ups and the speedrun timer are drawn by the game too, with its own HUD font. In the speeder and flight stages, which have no text layer, these and the pause menu are drawn over the picture in the same style.
 - **Achievements:** 16 per game, with pop-ups, a list in the menu, and optional Steam support.
 - **Speedrun timer** with per-stage splits and saved personal bests, plus play statistics.
 - **Rewind:** hold Backspace or the left trigger.
 - **CRT filter** (scanlines or full CRT), **colour styles**, **sprite flicker removal** and crisper sound interpolation.
-- **Orchestral music** through your own MSU-1 audio packs (see `msu/` and `msu-esb/`).
+- **Orchestral music** through your own MSU-1 audio packs (see `msu/`, `msu-esb/` and `msu-rotj/`; set up for the standard Conn & Relikk MSU-1 packs).
 - **Extras** unlocked by beating a game or entering one of its original cheat codes: the developers' own level-select debug menu, Lightsaber start and Hero select (Star Wars), and All Force powers and Infinite thermal detonators (Empire).
 - **Restored cut content** (Super Star Wars, off by default): a reconstruction of the Death Star stage left in the cartridge but cut before release. See `docs/CUT_CONTENT.md`.
 - Rumble, full keyboard and controller rebinding, 60 fps at any resolution, and crash reports you can send.
