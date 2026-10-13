@@ -232,14 +232,16 @@ static bool start_opens_pause(int b, bool down) {
   if (g_debug_menu) { g_debug_menu = false; return false; }
   return cfg.pause_menu && game_is_play_mode(game_mode(g_snes->ram));
 }
-static void level_select(void) { g_dev_pulse = 8; g_debug_menu = true; pad2_press((1 << BTN_L) | (1 << BTN_R)); }
-// the developer stage skip: Star Wars and Empire take Start on controller 2, Jedi B+Start on controller 1.
-// On controller 1 it waits until the game runs again (the pause menu presses Start to resume first).
-static uint16_t g_pad1_mask; static int g_pad1_hold, g_pad1_wait;
-static void stage_clear(void) {
-  if (g_game->clear_pad == 1) { g_pad1_mask = g_game->clear_buttons; g_pad1_hold = 0; g_pad1_wait = 120; }
-  else { g_dev_pulse = 8; pad2_press(g_game->clear_buttons); }
+// The developer keys. Jedi only reads them while the game runs, not in its pause loop, so there they are
+// pressed once the pause menu has resumed the game (dev_wait below); Star Wars and Empire take them at once.
+// The stage skip is Start on controller 2 in Star Wars and Empire, B+Start on controller 1 in Jedi.
+static uint16_t g_pad1_mask, g_dev_wait_mask; static int g_pad1_hold, g_dev_wait, g_dev_wait_pad;
+static void dev_press(int pad, uint16_t mask) {
+  if (g_game->clear_pad == 1) { g_dev_wait_pad = pad; g_dev_wait_mask = mask; g_dev_wait = 120; return; }   // Jedi
+  g_dev_pulse = 8; pad2_press(mask);
 }
+static void level_select(void) { g_debug_menu = true; dev_press(2, (1 << BTN_L) | (1 << BTN_R)); }
+static void stage_clear(void) { dev_press(g_game->clear_pad, g_game->clear_buttons); }
 
 static void update_title(void) {
   char t[200];
@@ -1590,14 +1592,15 @@ static int sp_saved_state(uint8_t* out) {
   memcpy(out, g_sp_snap, g_sp_snap_len);
   return g_sp_snap_len;
 }
-// the controller-1 stage skip (stage_clear): pressed once the game is running again, the developer flag on
+// Jedi's developer keys (dev_press): pressed once the game is running again, with the developer flag on
 static uint16_t pad1_extra(void) { return g_pad1_hold > 0 ? g_pad1_mask : 0; }
 static void pad1_tick(void) {
   if (g_pad1_hold > 0 && --g_pad1_hold == 0) g_pad1_mask = 0;
-  if (g_pad1_wait > 0) {
+  if (g_dev_wait > 0) {
     if (!g_menu && g_sp == SP_OFF && !sp_paused() && game_is_play_mode(game_mode(g_snes->ram))) {
-      g_dev_pulse = 8; g_pad1_hold = 4; g_pad1_wait = 0;
-    } else if (--g_pad1_wait == 0) g_pad1_mask = 0;
+      g_dev_pulse = 8; g_dev_wait = 0;
+      if (g_dev_wait_pad == 1) { g_pad1_mask = g_dev_wait_mask; g_pad1_hold = 4; } else pad2_press(g_dev_wait_mask);
+    } else --g_dev_wait;
   }
 }
 static void menus_after_vblank(void) { option_menu_tick(); stage_menu_tick(); hud_tick(); pace_tick(); }

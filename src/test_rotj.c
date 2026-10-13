@@ -13,6 +13,7 @@
 //   PPUINFO=1      print the windows and the active HDMA channels at the end
 //   VRAMDUMP=file  write VRAM and CGRAM at the end, print the BG base addresses
 //   OAMDUMP=1      print the sprite table at the end
+//   STATE=file     write a save state at the end (the program loads it with F7 as srotj.state)
 //   RAMDUMP=file   write WRAM at the end
 //   RAMLOG=file    append the first 8 KB of WRAM after every frame (for finding RAM variables)
 //   WATCHW=addr    print the code address of every CPU write to that WRAM address (hex, bank 7E)
@@ -215,6 +216,10 @@ int main(int argc, char** argv) {
       int x = (p->oam[2 * i] & 0xff) | ((p->highOam[i >> 2] >> ((i & 3) * 2)) & 1) << 8, y = p->oam[2 * i] >> 8;
       fprintf(stderr, "obj %3d x %4d y %3d tile %03X attr %02X big %d\n", i, x >= 256 ? x - 512 : x, y, p->oam[2 * i + 1] & 0x1ff, p->oam[2 * i + 1] >> 9, (p->highOam[i >> 2] >> ((i & 3) * 2 + 1)) & 1);
     }
+  }
+  if (getenv("STATE")) {   // a save state at the end, loadable in the program (F7 with the file named srotj.state)
+    static uint8_t st[4 * 1024 * 1024]; int n = snes_saveState(snes, st);
+    FILE* o = fopen(getenv("STATE"), "wb"); fwrite(st, 1, n, o); fclose(o);
   }
   if (getenv("RAMDUMP")) { FILE* o = fopen(getenv("RAMDUMP"), "wb"); fwrite(snes->ram, 1, 0x20000, o); fclose(o); }
   if (g_cdl) { FILE* o = fopen(getenv("CDL"), "wb"); fwrite(g_cdl, 1, 1 << 24, o); fclose(o); }
