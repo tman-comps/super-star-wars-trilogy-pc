@@ -6,7 +6,7 @@ A native PC version of the SNES **Super Star Wars** games, made by statically re
 |------|--------|
 | Super Star Wars (1992) | Playable start to finish, all PC features |
 | Super Star Wars: The Empire Strikes Back (1993) | Playable start to finish, all PC features |
-| Super Star Wars: Return of the Jedi (1994) | Groundwork: recompiled, playable start to finish; PC features (widescreen, achievements, music) still to come |
+| Super Star Wars: Return of the Jedi (1994) | Playable start to finish, all PC features (new: not playtested yet) |
 
 All three games run in one program as a trilogy (after one game's ending the next one starts), and each can also be built on its own.
 
@@ -26,7 +26,7 @@ All three games run in one program as a trilogy (after one game's ending the nex
 - **Rewind:** hold Backspace or the left trigger.
 - **CRT filter** (scanlines or full CRT), **colour styles**, **sprite flicker removal** and crisper sound interpolation.
 - **Orchestral music** through your own MSU-1 audio packs (see `msu/`, `msu-esb/` and `msu-rotj/`; set up for the standard Conn & Relikk MSU-1 packs).
-- **Extras** unlocked by beating a game or entering one of its original cheat codes: the developers' own level-select debug menu, Lightsaber start and Hero select (Star Wars), and All Force powers and Infinite thermal detonators (Empire).
+- **Extras** unlocked by beating a game or entering one of its original cheat codes: the developers' own level-select debug menu, Lightsaber start and Hero select (Star Wars), and All Force powers and Infinite thermal detonators (Empire and Jedi).
 - **Restored cut content** (Super Star Wars, off by default): a reconstruction of the Death Star stage left in the cartridge but cut before release. See `docs/CUT_CONTENT.md`.
 - Rumble, full keyboard and controller rebinding, 60 fps at any resolution, and crash reports you can send.
 
