@@ -75,6 +75,7 @@ struct Ppu {
   int curScreenY;                // screen line being rendered
   int (*wideTileHook)(void* ctx, int layer, int lx, int ly); // tile word, -1 = use VRAM, -2 = transparent
   void* wideCtx;
+  int wideClipL, wideClipR;       // extra-area columns outside [L, R) are drawn black (past the end of the level)
   uint8_t objPixW[256 + 2 * 96];
   // ---- high-resolution Mode 7 (port addition; inactive while m7hiresK == 0)
   int m7hiresK;                  // supersampling factor (2..4)

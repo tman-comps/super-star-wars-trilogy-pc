@@ -1,5 +1,5 @@
 // Renders widescreen frames headlessly: walks through a stage and writes wide PPMs.
-//   ssw_wide <rom> <extra> <frames> <out_prefix> [warp_mode warp_scene]
+//   ssw_wide <rom> <extra> <frames> <out_prefix> [warp_mode warp_scene]     FIRE=1: shoot while walking
 #include <stdio.h>
 #include <stdlib.h>
 #include "snes.h"
@@ -72,7 +72,9 @@ int main(int argc, char** argv) {
   for (int i = 0; i < 6; i++) { hold(1 << BTN_START, 4); hold(0, 120); }
   char name[256];
   for (int k = 0; k < frames / 300; k++) {
-    hold(1 << BTN_RIGHT, 250); hold((1 << BTN_RIGHT) | (1 << BTN_B), 20); hold(0, 30);
+    if (getenv("FIRE")) for (int r = 0; r < 25; r++) { hold(1 << BTN_RIGHT, 6); hold((1 << BTN_RIGHT) | (1 << BTN_Y), 4); }   // shoots doors open
+    else hold(1 << BTN_RIGHT, 250);
+    hold((1 << BTN_RIGHT) | (1 << BTN_B), 20); hold(0, 30);
     snprintf(name, sizeof name, "%s_%02d.ppm", argv[4], k); shot(name); if (m7k) shot_hires(name);
   }
   if (getenv("WS_REGS")) {
