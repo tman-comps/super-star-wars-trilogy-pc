@@ -27,7 +27,7 @@ const GameDef g_ssw = {
   {0x04, 0x0E, 0x08, 0x10},
   k_ssw_stages, NULL, (int)(sizeof k_ssw_stages / 2),
   GF_WIDESCREEN | GF_RESTORED | GF_MSU | GF_ACH | GF_TITLE_CRED,
-  0x9800,
+  0x9800, 0x005A, {0x55, 0x57, 0x58, 0x59, 0x5A},
 };
 #else
 int recomp_run(Cpu* cpu) { (void)cpu; return RECOMP_MISS; }
@@ -65,7 +65,7 @@ const GameDef g_esb = {
   {0x04, 0x0E, 0x12, 0},
   k_esb_stages, k_esb_names, (int)(sizeof k_esb_stages / 2),
   GF_TITLE_CRED | GF_ACH | GF_MSU | GF_WIDESCREEN,
-  0x13400,
+  0x13400, 0x006E, {0x54, 0x56, 0x57, 0x58, 0x59},
 };
 #endif
 

@@ -48,6 +48,9 @@ typedef struct GameDef {
   int nstages;
   unsigned features;
   uint32_t bg3_shadow;               // WRAM copy of the BG3 tilemap (32x32 words) the game uploads to VRAM $0800
+  uint16_t r_inidisp;                // WRAM byte the game copies to INIDISP ($2100); brightness 8 while paused
+  uint8_t t_box[5];                  // its menu pieces, as offsets from the font's first tile ($180 in SSW):
+                                     // heading underline, box side, box corner, box edge, dot cursor
 } GameDef;
 
 extern const GameDef g_ssw, g_esb;
