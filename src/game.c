@@ -40,7 +40,7 @@ const uint32_t g_hook_addrs[] = {0};
 #if defined(SSW_LAUNCHER)
 // launcher build: the interpreter calls the same hook points (keep in sync with analysis/esb/hooks.txt)
 const uint32_t esb_g_hook_addrs[] = {0x80A559, 0x80A565, 0x80DF0A, 0};
-const uint32_t rotj_g_hook_addrs[] = {0};   // keep in sync with analysis/rotj/hooks.txt
+const uint32_t rotj_g_hook_addrs[] = {0x80E0F7, 0x81CC58, 0x81CC64, 0};   // keep in sync with analysis/rotj/hooks.txt
 #endif
 
 #ifndef NO_ESB
@@ -78,7 +78,7 @@ const GameDef g_esb = {
 
 #ifndef NO_ROTJ
 // Super Return of the Jedi (USA) (Rev 1): same Sculptured engine, moved around in RAM.
-// Recompiled code, scene table, stage list, menus, MSU-1 music, achievements. No widescreen yet.
+// Recompiled code, scene table, stage list, menus, MSU-1 music, achievements, widescreen.
 int rotj_recomp_run(Cpu* cpu);
 extern const uint32_t rotj_g_hook_addrs[];
 static const uint8_t k_rotj_stages[][2] = {   // play order, from the game's scene sequence table
@@ -102,7 +102,7 @@ const GameDef g_rotj = {
   0x0731, {0x2100, 0},       // option-screen cursor, window 1 table (indirect HDMA, 224 lines)
   {0x04, 0x0C, 0x12, 0x14, 0x0A},
   k_rotj_stages, k_rotj_names, (int)(sizeof k_rotj_stages / 2),
-  GF_TITLE_CRED | GF_MSU | GF_ACH,
+  GF_TITLE_CRED | GF_MSU | GF_ACH | GF_WIDESCREEN,
   // BG3 tilemap copy at $7F:1440 (uploaded to VRAM $1000, not $0800 as in the others), INIDISP shadow
   // $7B (reads 8 in the pause loop), box pieces as in Empire (side $156, corner $157, edge $158, font $100),
   // step flag $0B59 (Empire's $0BB3), paces measured while playing; the stage skip is controller 1

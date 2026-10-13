@@ -1,2 +1,7 @@
-# Port hook points (see analysis/esb/hooks.txt). None yet for Super Return of the Jedi: the
-# widescreen visibility hooks come with the widescreen work.
+# Port hook points: the recompiled code (and the interpreter in runner.c) calls g_recomp_hook
+# before executing the instruction at each of these addresses, while g_hook_enable is set.
+# Used by widescreen to widen the game's "is this object on screen" tests (see src/widescreen.c).
+# Same engine code as Empire's 80A559 / 80A565 / 80DF0A (matched with tools/xmatch.py).
+81CC58   # visibility test, left extent:  cmp #$0100
+81CC64   # visibility test, right extent: cmp #$0100
+80E0F7   # despawn distance test:          cmp $53

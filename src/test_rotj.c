@@ -12,6 +12,7 @@
 //   SHOTS=prefix   screenshot file prefix (default shot)
 //   PPUINFO=1      print the windows and the active HDMA channels at the end
 //   VRAMDUMP=file  write VRAM and CGRAM at the end, print the BG base addresses
+//   OAMDUMP=1      print the sprite table at the end
 //   RAMDUMP=file   write WRAM at the end
 //   RAMLOG=file    append the first 8 KB of WRAM after every frame (for finding RAM variables)
 //   WATCHW=addr    print the code address of every CPU write to that WRAM address (hex, bank 7E)
@@ -19,6 +20,8 @@
 //   WILD=1         interpreter: stop and print the code path the first time code runs outside ROM
 //   CARDS=prefix   screenshots every 10 frames of each hero select card (mode 08), prefix_SS_n.ppm
 //   ACH=dir/       run the achievements (as if no cheats were on; dir/srotj_achievements.txt) and print unlocks
+//   WS=n           widescreen with n extra pixels a side; level-data selfcheck every 100 frames; WSHOT=frame
+//                  writes that frame's wide picture to wide.ppm
 //   INPUT=file     replay "frame mask" lines (hex SNES button mask) instead of the random play
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +32,7 @@
 #include "recomp_rt.h"
 #include "game.h"
 #include "achievements.h"
+#include "widescreen.h"
 int rotj_recomp_run(Cpu* cpu);
 extern const uint32_t rotj_g_hook_addrs[];
 extern uint8_t* g_cdl;
@@ -112,6 +116,8 @@ int main(int argc, char** argv) {
   Snes* snes = snes_init();
   snes_loadRom(snes, rom + off, len - off);
   if (getenv("WATCHW")) { extern uint8_t (*g_snes_write_filter)(Snes*, uint32_t, uint8_t); g_watch = (int)strtol(getenv("WATCHW"), 0, 16); g_snes_write_filter = watch_filter; }
+  int ws = getenv("WS") ? atoi(getenv("WS")) : 0;   // WS=extra pixels: widescreen on, selfcheck every 100 frames
+  if (ws) ws_init(snes, snes->cart->rom, len - off);
   if (getenv("ACH")) { ach_init(snes, getenv("ACH")); ach_set_rom(snes->cart->rom); }
   int play = 0, pm = -1, ps = -1;
   for (int f = 0; f < frames; f++) {
@@ -133,6 +139,7 @@ int main(int argc, char** argv) {
     }
     if (argc > 7 && g_rotj.r_lives) snes->ram[g_rotj.r_lives] = 3;
     g_frame = f;
+    if (ws) ws_update(ws);
     if (getenv("WILD")) {   // interpreter: stop at the first instruction fetched outside ROM (other than the $0100 vectors), print the path there
       static uint32_t hist[256]; static int hn;
       uint32_t fr = snes->frames; int phase = 0;
@@ -152,6 +159,13 @@ int main(int argc, char** argv) {
     } else
     runner_frame(snes);
     m = game_mode(snes->ram); sc = game_scene(snes->ram);
+    if (ws && f % 100 == 99 && game_is_play_mode(m)) { int tot, bad = ws_selfcheck(&tot); fprintf(stderr, "f%d mode %02X scene %02X selfcheck %d/%d bad, wideExtra %d\n", f, m, sc, bad, tot, snes->ppu->wideExtra); }
+    if (ws && getenv("WSHOT") && f == atoi(getenv("WSHOT"))) {   // the wide frame as wide.ppm
+      int W = 256 + 2 * PPU_WIDE_MAX, e = snes->ppu->wideExtra;
+      FILE* o = fopen("wide.ppm", "wb"); fprintf(o, "P6 %d 224 255\n", 256 + 2 * e);
+      for (int y = 0; y < 224; y++) for (int x = -e; x < 256 + e; x++) { uint32_t c = snes->ppu->wideBuffer[y * W + x + PPU_WIDE_MAX]; fputc(c >> 16, o); fputc(c >> 8, o); fputc(c, o); }
+      fclose(o);
+    }
     if (getenv("ACH")) { ach_update(0); int id; while ((id = ach_pop_toast()) >= 0) { const char *t, *d; ach_get(id, &t, &d); fprintf(stderr, "f%d UNLOCK %s\n", f, t); } }
     {   // CARDS=prefix: a screenshot of every stage card / hero select (mode 08), 90 frames in
       static int card_at = -1;
@@ -195,6 +209,13 @@ int main(int argc, char** argv) {
   }
   if (getenv("VRAMDUMP")) { FILE* o = fopen(getenv("VRAMDUMP"), "wb"); fwrite(snes->ppu->vram, 2, 0x8000, o); fwrite(snes->ppu->cgram, 2, 256, o); fclose(o);
     fprintf(stderr, "bg mode %d; bg tileAdr/tilemapAdr:", snes->ppu->mode); for (int i = 0; i < 4; i++) fprintf(stderr, " %04X/%04X", snes->ppu->bgLayer[i].tileAdr, snes->ppu->bgLayer[i].tilemapAdr); fprintf(stderr, "\n"); }
+  if (getenv("OAMDUMP")) {   // sprites at the end: x, y, tile, attr, size bit
+    Ppu* p = snes->ppu;
+    for (int i = 0; i < 128; i++) {
+      int x = (p->oam[2 * i] & 0xff) | ((p->highOam[i >> 2] >> ((i & 3) * 2)) & 1) << 8, y = p->oam[2 * i] >> 8;
+      fprintf(stderr, "obj %3d x %4d y %3d tile %03X attr %02X big %d\n", i, x >= 256 ? x - 512 : x, y, p->oam[2 * i + 1] & 0x1ff, p->oam[2 * i + 1] >> 9, (p->highOam[i >> 2] >> ((i & 3) * 2 + 1)) & 1);
+    }
+  }
   if (getenv("RAMDUMP")) { FILE* o = fopen(getenv("RAMDUMP"), "wb"); fwrite(snes->ram, 1, 0x20000, o); fclose(o); }
   if (g_cdl) { FILE* o = fopen(getenv("CDL"), "wb"); fwrite(g_cdl, 1, 1 << 24, o); fclose(o); }
   uint32_t miss[64]; int n = runner_miss_list(miss, 64);
