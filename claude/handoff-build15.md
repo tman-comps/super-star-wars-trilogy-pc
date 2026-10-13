@@ -19,6 +19,9 @@ Previous note: claude/handoff-build14.md.
   as dangerous. Landspeeder damage per minute, same random input: console 65, full overclock 160,
   boost 80; Empire snowspeeder 61 / 139 / 82. Mode 08 (SSW) and $12 (Empire asteroids) don't use the
   flag and keep the console's speed (they run full speed or aren't affected anyway).
+- Speeder damage (test 5, T-Man found the speeders still too hard): in all Mode 7 play modes half of each
+  HP loss is given back after the frame (`damage_tick`, setting `speeder_damage_half`, default on).
+  Landspeeder, same random input: 42 damage a minute (console 65).
 - Clear stage / Level select: developer flag only for 8 frames (`g_dev_pulse`); the first Start
   after Level select goes to the game (`g_debug_menu`); Developer features off clears the game's flag.
 - Reports: ssw_report_<date>_<time>.txt/.state (and ssw_crash_...).

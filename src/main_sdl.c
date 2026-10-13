@@ -69,7 +69,8 @@ static struct {
   int wide_spawn; // widescreen enemies: 0 = shown and active in the wide view (spawning as the original),
                   // 1 = also spawn at the wide view's edge, 2 = like the original (only the 4:3 view counts)
   int pause_menu; // Start during a stage opens the port's pause menu (0 = the game's own plain pause)
-} cfg = {ASPECT_4_3, 0, 0, 80, 0, 0, 0, 0, WIDE_OFF, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 100, 0, 0, 1, 0, 0, 1};
+  int m7_damage;  // damage taken in the speeder and flight (Mode 7) stages: 1 = half, 0 = the original's
+} cfg = {ASPECT_4_3, 0, 0, 80, 0, 0, 0, 0, WIDE_OFF, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 100, 0, 0, 1, 0, 0, 1, 1};
 static const char* k_m7_names[] = {"Original", "High (2x)", "Ultra (4x)"};
 static int g_msu_songs;    // songs mapped in msu/msu.txt (0 = no pack installed)
 
@@ -102,6 +103,7 @@ static void cfg_load(void) {
     else if (!strcmp(k, "colour")) cfg.color = v < 0 ? 0 : v > 2 ? 2 : v;
     else if (!strcmp(k, "speedrun_timer")) cfg.timer = !!v;
     else if (!strcmp(k, "rewind")) cfg.rewind = !!v;
+    else if (!strcmp(k, "speeder_damage_half")) cfg.m7_damage = !!v;
     else if (!strcmp(k, "trilogy_continue")) cfg.trilogy = !!v;
     else if (!strcmp(k, "last_game")) cfg.last_game = v;
     else if (!strcmp(k, "widescreen_spawning")) cfg.wide_spawn = v < 0 || v > 2 ? 0 : v;
@@ -117,7 +119,7 @@ static void cfg_save(void) {
   if (!f) return;
   fprintf(f, "aspect=%d\ninteger_scale=%d\nfullscreen=%d\nvolume=%d\nsmooth=%d\nlightsaber_start=%d\nhero_select=%d\nwidescreen=%d\nextras_unlocked=%d\n",
           cfg.aspect, cfg.integer_scale, cfg.fullscreen, cfg.volume, cfg.smooth, cfg.saber, cfg.hero, cfg.wide, cfg.unlocked);
-  fprintf(f, "remove_slowdown=%d\norchestral_music=%d\nmode7_detail=%d\nrestored_stage=%d\nrumble=%d\ncrt=%d\nno_sprite_flicker=%d\nsound_interpolation=%d\ncolour=%d\nmusic_volume=%d\nspeedrun_timer=%d\nrewind=%d\n", cfg.no_slowdown, cfg.msu, cfg.m7, cfg.restored, cfg.rumble, cfg.crt, cfg.nolimit, cfg.interp, cfg.color, cfg.music_vol, cfg.timer, cfg.rewind);
+  fprintf(f, "remove_slowdown=%d\norchestral_music=%d\nmode7_detail=%d\nrestored_stage=%d\nrumble=%d\ncrt=%d\nno_sprite_flicker=%d\nsound_interpolation=%d\ncolour=%d\nmusic_volume=%d\nspeedrun_timer=%d\nrewind=%d\nspeeder_damage_half=%d\n", cfg.no_slowdown, cfg.msu, cfg.m7, cfg.restored, cfg.rumble, cfg.crt, cfg.nolimit, cfg.interp, cfg.color, cfg.music_vol, cfg.timer, cfg.rewind, cfg.m7_damage);
   fprintf(f, "trilogy_continue=%d\nlast_game=%d\nwidescreen_spawning=%d\npause_menu=%d\n", cfg.trilogy, cfg.last_game, cfg.wide_spawn, cfg.pause_menu);
   for (int i = 0; i < 12; i++) fprintf(f, "key_%d=%d\npad_%d=%d\n", i, (int)g_keymap[i], i, g_padmap[i]);
   fclose(f);
@@ -242,6 +244,7 @@ static void update_title(void) {
 static void apply_fullscreen(void) { SDL_SetWindowFullscreen(g_win, cfg.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0); }
 
 static int sp_saved_state(uint8_t* out);   // the game before the pause menu paused it, or 0
+static void damage_forget(void);   // see damage_tick
 static void save_state_file(void) {
   g_state_len = sp_saved_state(g_state);
   if (!g_state_len) g_state_len = snes_saveState(g_snes, g_state);
@@ -249,6 +252,7 @@ static void save_state_file(void) {
   if (f) { fwrite(g_state, 1, g_state_len, f); fclose(f); }
 }
 static void load_state_file(void) {
+  damage_forget();
   crashlog_event("load state");
   FILE* f = fopen(g_state_path, "rb");
   if (f) { g_state_len = (int)fread(g_state, 1, 4 * 1024 * 1024, f); fclose(f); }
@@ -281,6 +285,7 @@ static void autosave_tick(void) {
 // quick restart: the continue file is written 2 s into every stage, so it is the current stage's start
 static int restart_available(void) { int st = stage_number(); return st && st == g_cont_stage; }
 static void cont_load(void) {
+  damage_forget();
   crashlog_event("continue / restart stage");
   FILE* f = fopen(g_cont_path, "rb");
   if (!f) return;
@@ -385,6 +390,7 @@ static void rewind_record(void) {
   if (g_rw_count < RW_SLOTS) g_rw_count++;
 }
 static bool rewind_step(void) {   // load the previous snapshot; false when the buffer is empty
+  damage_forget();
   if (g_rw_count <= 1) return false;
   g_rw_head = (g_rw_head + RW_SLOTS - 1) % RW_SLOTS; g_rw_count--;
   int i = (g_rw_head + RW_SLOTS - 1) % RW_SLOTS;
@@ -507,6 +513,23 @@ static void pace_tick(void) {
   if (step) g_pace_since = 0; else g_pace_since++;
   g_snes_overclock = g_pace_since >= g_pace - 1;   // frame g_pace of the step (or later): finish it now
 }
+// Speeder damage: in the Mode 7 stages (speeders, flights) half of every hit is given back, after the
+// frame the game took it in (a hit that ends a life isn't touched). Odd amounts carry over, so two
+// 1-point hits cost 1. g_hp_last is forgotten whenever the game state jumps (state load, rewind, reset).
+static int g_hp_last = -1, g_hp_carry;
+static void damage_forget(void) { g_hp_last = -1; g_hp_carry = 0; }
+static void damage_tick(void) {
+  uint8_t* ram = g_snes->ram;
+  int mode = game_mode(ram);
+  if (!cfg.m7_damage || mode == 0x0004 || !game_is_play_mode(mode)) { damage_forget(); return; }
+  int hp = ram[g_game->r_hp];
+  if (g_hp_last > 0 && hp > 0 && hp < g_hp_last) {
+    int total = g_hp_carry + (g_hp_last - hp), taken = total / 2;
+    g_hp_carry = total - 2 * taken;
+    ram[g_game->r_hp] = (uint8_t)(g_hp_last - taken);
+  }
+  g_hp_last = ram[g_game->r_hp];
+}
 static void pace_after_frame(void) { if (g_game->r_step_flag) g_pace_flag_was = g_snes->ram[g_game->r_step_flag] != 0; }
 
 // ---------------------------------------------------------------- menu overlay (drawn into the 512x480 frame)
@@ -515,7 +538,7 @@ static int g_ach_sel;
 static int g_toast_id = -1, g_toast_timer;
 static int g_sel;
 static bool g_quit;
-enum { M_RESUME, M_ACH, M_STATS, M_TIMER, M_REWIND, M_CONTROLS, M_CONTINUE, M_RESTART, M_WIDE, M_M7, M_SLOW, M_MUSIC, M_RESTORED, M_RUMBLE, M_ASPECT, M_INTEGER, M_SMOOTH, M_CRT, M_COLOR, M_NOLIMIT, M_FULL, M_VOLUME, M_MUSICVOL, M_INTERP, M_SABER, M_HERO, M_DEV, M_LEVEL, M_CLEAR, M_SAVE, M_LOAD, M_REPORT, M_RESET, M_QUIT, M_GAME, M_TRILOGY, M_SPAWN, M_TITLE, M_PAUSEBTN,
+enum { M_RESUME, M_ACH, M_STATS, M_TIMER, M_REWIND, M_CONTROLS, M_CONTINUE, M_RESTART, M_WIDE, M_M7, M_SLOW, M_MUSIC, M_RESTORED, M_RUMBLE, M_ASPECT, M_INTEGER, M_SMOOTH, M_CRT, M_COLOR, M_NOLIMIT, M_FULL, M_VOLUME, M_MUSICVOL, M_INTERP, M_SABER, M_HERO, M_DEV, M_LEVEL, M_CLEAR, M_SAVE, M_LOAD, M_REPORT, M_RESET, M_QUIT, M_GAME, M_TRILOGY, M_SPAWN, M_TITLE, M_PAUSEBTN, M_M7DMG,
        M_PG_VIDEO, M_PG_AUDIO, M_PG_GAME, M_PG_EXTRAS, M_PG_OPTIONS, M_COUNT };
 // menu pages: lists of item ids, -1 terminated. Built per game (build_pages): items for features a game
 // doesn't have yet are left out.
@@ -525,7 +548,7 @@ static const int k_pg_main_all[] = {M_RESUME, M_RESTART, M_CONTINUE, M_PG_OPTION
 static const int k_pg_options_all[] = {M_GAME, M_PG_VIDEO, M_PG_AUDIO, M_PG_GAME, M_CONTROLS, M_PG_EXTRAS, M_REPORT, -1};
 static const int k_pg_video_all[] = {M_WIDE, M_SPAWN, M_M7, M_ASPECT, M_INTEGER, M_SMOOTH, M_CRT, M_COLOR, M_NOLIMIT, M_FULL, -1};
 static const int k_pg_audio_all[] = {M_VOLUME, M_MUSIC, M_MUSICVOL, M_INTERP, -1};
-static const int k_pg_game_all[] = {M_SLOW, M_TIMER, M_REWIND, M_RUMBLE, M_PAUSEBTN, M_RESTORED, M_TRILOGY, -1};
+static const int k_pg_game_all[] = {M_SLOW, M_M7DMG, M_TIMER, M_REWIND, M_RUMBLE, M_PAUSEBTN, M_RESTORED, M_TRILOGY, -1};
 static const int k_pg_extras_all[] = {M_SABER, M_HERO, M_LEVEL, M_CLEAR, M_DEV, -1};
 #define NPAGES 6
 static const int* const k_pages_all[NPAGES] = {k_pg_main_all, k_pg_video_all, k_pg_audio_all, k_pg_game_all, k_pg_extras_all, k_pg_options_all};
@@ -926,6 +949,7 @@ static void menu_label(int i, char* out, int n) {
     case M_PG_OPTIONS: snprintf(out, n, "Options..."); break;
     case M_TITLE: snprintf(out, n, "Quit to title"); break;
     case M_PAUSEBTN: snprintf(out, n, "Start: %s", cfg.pause_menu ? "Pause menu" : "Game pause"); break;
+    case M_M7DMG: snprintf(out, n, "Speeder damage: %s", cfg.m7_damage ? "Half" : "Normal"); break;
     case M_REPORT:   // the file is ssw_report_<date>_<hh-mm-ss>.txt; the row only has room for the time
       if (g_report_timer > 0) { const char* r = crashlog_last_report(); size_t l = strlen(r);
         snprintf(out, n, "Saved report %.2s:%.2s:%.2s", l >= 8 ? r + l - 8 : "", l >= 5 ? r + l - 5 : "", l >= 2 ? r + l - 2 : ""); }
@@ -1051,6 +1075,7 @@ static void menu_change(int dir, bool activate) {
       return;
     case M_TITLE: if (activate) { crashlog_event("quit to title"); snes_reset(g_snes, false); rewind_clear(); g_menu = false; } return;
     case M_PAUSEBTN: cfg.pause_menu ^= 1; break;
+    case M_M7DMG: cfg.m7_damage ^= 1; break;
     case M_RESUME: if (activate) g_menu = false; break;
     case M_ACH: if (activate) g_ach_screen = 1; break;
     case M_STATS: if (activate) g_stats_screen = 1; break;
@@ -1911,7 +1936,7 @@ int main(int argc, char** argv) {
       g_snes->ppu->m7frameUsed = false;
       if (redraw_only && frames == 0) { uint16_t keep = g_btn_down; g_btn_down = 0; push_buttons(); g_btn_down = keep; if (HAS(GF_WIDESCREEN)) { extern int g_ws_spawn_wide, g_ws_objects; g_ws_spawn_wide = cfg.wide_spawn == 1; g_ws_objects = cfg.wide_spawn != 2; ws_update(wide_extra()); } runner_frame(g_snes); }
       if (redraw_only) frames = 0;   // holding rewind with nothing left: pause
-      for (int i = 0; i < frames; i++) { bool sp = g_sp != SP_OFF; if (cfg.rewind && !sp) rewind_record(); g_snes->ppu->noSpriteLimit = cfg.nolimit; { extern int g_dsp_interp; g_dsp_interp = cfg.interp; } push_buttons(); apply_dev_flags(); if (HAS(GF_RESTORED)) restore_update(cfg.restored); update_overclock(); steam_tick(); if (HAS(GF_WIDESCREEN)) { extern int g_ws_spawn_wide, g_ws_objects; g_ws_spawn_wide = cfg.wide_spawn == 1; g_ws_objects = cfg.wide_spawn != 2; ws_update(wide_extra()); } runner_frame(g_snes); sp_after_frame(); after_frame_buttons(); if (!sp) { autosave_tick(); if (HAS(GF_ACH)) ach_update(g_port_touched || cfg.dev || g_rewound); rumble_tick(); if (HAS(GF_RESTORED)) restore_tick(); trilogy_tick(); extras_frame(g_port_touched || cfg.dev || g_rewound); } crashlog_frame(); if (g_test_crash && --g_test_crash == 0) *(volatile int*)0 = 1; }
+      for (int i = 0; i < frames; i++) { bool sp = g_sp != SP_OFF; if (cfg.rewind && !sp) rewind_record(); g_snes->ppu->noSpriteLimit = cfg.nolimit; { extern int g_dsp_interp; g_dsp_interp = cfg.interp; } push_buttons(); apply_dev_flags(); if (HAS(GF_RESTORED)) restore_update(cfg.restored); update_overclock(); steam_tick(); if (HAS(GF_WIDESCREEN)) { extern int g_ws_spawn_wide, g_ws_objects; g_ws_spawn_wide = cfg.wide_spawn == 1; g_ws_objects = cfg.wide_spawn != 2; ws_update(wide_extra()); } runner_frame(g_snes); sp_after_frame(); after_frame_buttons(); if (!sp) { damage_tick(); autosave_tick(); if (HAS(GF_ACH)) ach_update(g_port_touched || cfg.dev || g_rewound); rumble_tick(); if (HAS(GF_RESTORED)) restore_tick(); trilogy_tick(); extras_frame(g_port_touched || cfg.dev || g_rewound); } crashlog_frame(); if (g_test_crash && --g_test_crash == 0) *(volatile int*)0 = 1; }
       if (dev && !fast) {
         int n = SAMPLE_RATE / 60;
         snes_setSamples(g_snes, g_audio, n);
