@@ -1401,7 +1401,7 @@ static void menu_escape(void) {
 // ---------------------------------------------------------------- scripted test runs
 // SSW_AUTOTEST="w600 k:Return w30 shot:title.ppm q" plays a script instead of a person: wN waits N frames,
 // k:<SDL key name> taps a key (_ for a space in the name), shot:<file> writes the next normal (not
-// widescreen) picture, menus included, as a 512x448 PPM, q quits. For checking the menus without a screen.
+// widescreen) picture, menus included, as a 512x448 PPM (widescreen: its own width x 224), q quits. For checking the menus without a screen.
 static const char* g_at;
 static int g_at_wait;
 static SDL_Keycode g_at_up;
@@ -1424,6 +1424,16 @@ static void autotest_tick(void) {
   else if (!strncmp(tok, "k:", 2)) { g_at_up = SDL_GetKeyFromName(tok + 2); at_key(g_at_up, true); }
   else if (!strncmp(tok, "shot:", 5)) snprintf(g_at_shot, sizeof g_at_shot, "%s", tok + 5);
   else if (!strcmp(tok, "q")) g_quit = true;
+}
+static void autotest_shot_wide(const uint32_t* wb, int stride, int x0, int w) {   // the widescreen picture, w x 224
+  if (!g_at_shot[0]) return;
+  FILE* f = fopen(g_at_shot, "wb");
+  if (f) {
+    fprintf(f, "P6 %d 224 255\n", w);
+    for (int y = 0; y < 224; y++) for (int x = 0; x < w; x++) { uint32_t c = wb[y * stride + x0 + x]; fputc(c >> 16, f); fputc(c >> 8, f); fputc(c, f); }
+    fclose(f);
+  }
+  g_at_shot[0] = 0;
 }
 static void autotest_shot(void) {
   if (!g_at_shot[0]) return;
@@ -1816,6 +1826,7 @@ int main(int argc, char** argv) {
       title_credit(wb, WW, PPU_WIDE_MAX, 0, 1);
       color_apply(wb + PPU_WIDE_MAX - want_extra, WW, 256 + 2 * want_extra, 224);
       if (HAS(GF_RESTORED)) restore_draw_walls(wb, WW, PPU_WIDE_MAX, 0, 1, -act, 256 + act);
+      autotest_shot_wide(wb, WW, PPU_WIDE_MAX - want_extra, 256 + 2 * want_extra);
       SDL_UpdateTexture(t, NULL, wb, WW * 4);
       src = (SDL_Rect){PPU_WIDE_MAX - want_extra, 0, 256 + 2 * want_extra, 224};
       ar = (256.0 + 2 * want_extra) * pixel_aspect() / 224.0;

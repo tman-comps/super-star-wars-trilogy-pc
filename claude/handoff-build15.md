@@ -18,10 +18,24 @@ Previous note: claude/handoff-build14.md.
   after Level select goes to the game (`g_debug_menu`); Developer features off clears the game's flag.
 - Reports: ssw_report_<date>_<time>.txt/.state (and ssw_crash_...).
 
+## Menus (feedback 5), done in build 14 test 2
+T-Man wants the menus to be part of the games, drawn by the game (no overlays). Now:
+- Title screen stock. GAME OPTION MENU gets PORT SETTINGS / ACHIEVEMENTS rows (box moved up 4 rows,
+  window table rewritten: `option_menu_tick`). Pages show in the option screen's upper box via the game's
+  BG3 tilemap (`om_draw_menu`); the CONTROL PAD box stays (achievements use it for the description).
+- Pause in a side-scrolling stage = the game's own pause (Start injected; paused when the INIDISP
+  shadow `GameDef.r_inidisp` reads brightness 8). The menu goes into BG3 under the HUD (rows 5+), font
+  tiles uploaded into free BG3 tile slots, other layers halved by colour math; everything restored and
+  Start injected again on close (`stage_menu_tick`). Empire switches BG3 mid-frame below its HUD, so both
+  BG3 set-ups get the menu. Save state saves the snapshot taken just before pausing.
+- Mode 7 stages: no BG3 below the HUD (mode switch mid-frame), so the pause menu is still drawn over the
+  picture (`draw_menu`, same look). Achievement pop-ups and the speedrun timer are also still drawn over.
+- Menu screens are built once as a BG3 cell grid (`cg_*`, `menu_build`), box pieces as codes mapped per
+  game (`GameDef.t_box`: Empire's are one lower than Super Star Wars').
+- Test without a screen: `SSW_AUTOTEST="w900 k:Return w60 shot:a.ppm q" SDL_VIDEODRIVER=dummy ./ssw`.
+
 ## Still open
-1. Menus (feedback 5): put the PC settings inside the game's own OPTION MENU screen, looking stock,
-   instead of PC SETTINGS on the title; pause menu in the game's style (box tiles $1D7-$1D9, dot
-   cursor $1DA, gold/green palettes).
+1. Ideas: Mode 7 pause in-game (would need forcing mode 1 on the menu's lines), pop-ups in-game.
 2. Return of the Jedi (ROM USA Rev 1, SHA-1 b8dca1cd...).
 3. MSU packs: map the real pack track numbers into msu/msu.txt, msu-esb/msu.txt, add RotJ.
    T-Man needs to re-upload the packs.
