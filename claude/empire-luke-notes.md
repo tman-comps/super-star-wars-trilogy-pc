@@ -46,9 +46,16 @@ blaster + thermal detonators + lightsaber, Force meter and all 8 Force powers at
   126-131 (up). A button switches blaster/saber, Y fires/swings.
 - The mapping is `build_map()` in `src/empire_luke.c`.
 
+## Moves, weapons, Force (test build 2, `eluke_play`)
+- SSW already has slide (Down+jump while running, poses 53-57) and somersault (Up+jump, poses 125-132).
+- Double jump: jump pressed again after 6+ airborne frames sets Y speed `$0FF1` to -1856.
+- Object tables (word per slot, 20 slots, 0 = player): type `$09D9`, HP `$0A79` (player max `$08FF`),
+  event `$0B69`, script ptr `$0B91`/bank `$0BB9`, `$0C09`, script wait `$0C59`, X `$0F51`, X speed `$0F79`,
+  Y `$0FC9`, Y speed `$0FF1`. After a hit `$04EE` counts down 32 frames. Damage routine `$80:EC6A`.
+- Defeating an enemy = HP 0 + event $44 delivered like `$80:CF91` (`send_event`).
+- Force meter + powers + thermal detonators: L/R choose, X uses; HUD line from `eluke_hud` in `hud_build`.
+
 ## Next steps
-1. Moves: double jump, slide (Empire player code; SSW player state machine needs extending).
-2. Thermal detonators, Empire blaster.
-3. Force meter (HUD) and the 8 powers: Mind Control, Elevation, Slowdown, Saber Control, Saber Deflect,
-   Freeze, Invisible, Heal (names at Empire ROM `$81:DB80`..). All available at once.
-4. Turn `ELUKE_TEST` off; unlock after beating both games.
+1. Visuals: spin on the double jump, a flying saber for Saber Control, thrown bomb + blast for detonators,
+   a look for Invisible / Deflect.
+2. Turn `ELUKE_TEST` off; unlock after beating both games.
