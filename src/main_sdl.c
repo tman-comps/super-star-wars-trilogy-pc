@@ -1102,11 +1102,12 @@ static void open_menu(bool open) {
 // HUD overlay in the menu's style: achievement pop-up (top centre) and speedrun timer (top right),
 // drawn into a transparent canvas cw x 224 that is stretched over the picture.
 static uint32_t g_hud[512 * 224];
+static unsigned g_hud_ingame;
 static bool draw_hud(int cw) {
   memset(g_hud, 0, sizeof g_hud);
   g_cv.buf = g_hud; g_cv.w = cw; g_cv.h = 224; g_cv.stride = 512; g_cv.scale = 1; g_cv.yoff = 0; g_cv.alpha = 1;
   bool any = false;
-  if (g_toast_id >= 0 && !g_menu) {
+  if (g_toast_id >= 0 && !g_menu && !(g_hud_ingame & 1)) {
     const char *t, *d; ach_get(g_toast_id, &t, &d);
     char ttl[48]; snprintf(ttl, sizeof ttl, "%.28s", t);
     int w = (st_w(ttl) + 40 + 7) / 8 * 8; if (w < 152) w = 152;
@@ -1121,7 +1122,7 @@ static bool draw_hud(int cw) {
     st_text(x + 28, y + 23, ttl, PAL_GREEN);
     any = true;
   }
-  if (cfg.timer && !g_menu) {
+  if (cfg.timer && !g_menu && !(g_hud_ingame & 2)) {
     char run[24], st[24]; uint32_t col, scol; int show_split;
     if (extras_timer_text(run, sizeof run, st, sizeof st, &col, &scol, &show_split)) {
       ui_text_r(cw - 6, 26, run, col);
@@ -1253,7 +1254,13 @@ static Bg3Cfg sp_cfg_now(void) {
   Bg3Cfg c = {b->tilemapAdr, b->tileAdr, b->hScroll, b->vScroll, b->tilemapWider, b->tilemapHigher};
   return c;
 }
-static void sp_after_frame(void) { if (g_sp == SP_PAUSING) g_sp_bottom = sp_cfg_now(); }   // in vblank, before the game's NMI
+static int g_bottom_mode;   // the PPU mode at the bottom of the last frame (Mode 7 stages switch to it under the HUD)
+static void hud_lift(void);
+static int g_hc_n;
+static void sp_after_frame(void) {   // in vblank, before the game's NMI
+  g_sp_bottom = sp_cfg_now(); g_bottom_mode = g_snes->ppu->mode;
+  hud_lift();
+}
 static struct { bool math[6], add_sub, sub, half; uint8_t fr, fg, fb, clip, prevent; } g_sp_ppu;
 static bool sp_possible(void) {
   Ppu* p = g_snes->ppu;
@@ -1381,12 +1388,89 @@ static void stage_menu_tick(void) {
   }
 }
 static void open_pause(void) { open_menu(true); sp_open(); }
+
+// ---------------------------------------------------------------- achievement pop-up and timer, drawn by the game
+// In the side-scrolling stages BG3 also holds the HUD's font: the option screen's glyphs (letters,
+// digits, punctuation, box pieces) in the same order, at a tile number that depends on the stage. The
+// pop-up and the speedrun timer are written into BG3 under the HUD with those tiles, every frame after the
+// game's uploads, and every frame after the picture is drawn the game's own words go back (hud_lift), so
+// snapshots, rewind and save states never contain them. Elsewhere (title, Mode 7 stages) they are still
+// drawn over the picture (draw_hud).
+static int g_hf_base = -1;           // BG3 tile number of the font's first tile ($180 in SSW) in this stage
+static int g_hf_wait;
+// g_hud_ingame (declared with draw_hud): drawn by the game this frame, 1 pop-up, 2 timer
+static struct { uint16_t adr, orig, wrote; } g_hc[2 * 8 * CG_W];   // cells written this frame (g_hc_n of them)
+static bool hf_glyph_at(int t, int off) {   // BG3 tile t holds the captured font's tile off
+  Ppu* p = g_snes->ppu;
+  for (int k = 0; k < 8; k++)
+    if (p->vram[(p->bgLayer[2].tileAdr + t * 8 + k) & 0x7fff] != (g_gfont[off * 16 + 2 * k] | g_gfont[off * 16 + 2 * k + 1] << 8)) return false;
+  return true;
+}
+static bool hf_find(void) {   // is the font (still) there? Searched again at most every half second
+  if (g_hf_base >= 0 && hf_glyph_at(g_hf_base + 0x1A, 0x1A) && hf_glyph_at(g_hf_base + 0x34, 0x34)) return true;
+  g_hf_base = -1;
+  if (g_hf_wait > 0) { g_hf_wait--; return false; }
+  g_hf_wait = 30;
+  for (int t = 0x1A; t < 1024 - 0x40; t++)
+    if (hf_glyph_at(t, 0x1A) && hf_glyph_at(t + 0x19, 0x33) && hf_glyph_at(t + 0x1A, 0x34) && hf_glyph_at(t + 0x24, 0x3E)) { g_hf_base = t - 0x1A; return true; }
+  return false;
+}
+static void hud_build(void) {   // into the cell grid, rows 4-9
+  cg_clear();
+  g_hud_ingame = 0;
+  if (cfg.timer) {   // row 4, right: the split (or stage time), then the run time
+    char run[24], st[24]; uint32_t col, scol; int show_split;
+    if (extras_timer_text(run, sizeof run, st, sizeof st, &col, &scol, &show_split)) {
+      int rp = col == 0xffffff ? PAL_WHITE : PAL_BOX;
+      int sp = scol == 0x60e070 ? PAL_GREEN : scol == 0xf06060 ? PAL_GOLD : scol == 0xffe060 ? PAL_WHITE : PAL_BOX;
+      int rc = 30 - cg_len(run);
+      cg_text(rc, 4, run, rp);
+      if (st[0]) cg_text(rc - 2 - cg_len(st), 4, st, sp);
+      g_hud_ingame |= 2;
+    }
+  }
+  if (g_toast_id >= 0) {   // rows 5-8: the game's box, "ACHIEVEMENT" in gold, the name in green
+    const char *t, *d; ach_get(g_toast_id, &t, &d);
+    char ttl[32]; snprintf(ttl, sizeof ttl, "%.26s", t);
+    int w = (cg_len(ttl) > 11 ? cg_len(ttl) : 11) + 4, c = (CG_W - w) / 2;
+    cg_box(c, 5, w, 4);
+    cg_text_c(6, "ACHIEVEMENT", PAL_GOLD);
+    cg_text_c(7, ttl, PAL_GREEN);
+    g_hud_ingame |= 1;
+  }
+}
+// once per frame after the game's vblank uploads (runner hook): the grid's cells into both BG3 set-ups
+static void hud_tick(void) {
+  hud_lift();   // normally already done after the last picture (not when a frame was only redrawn)
+  if (g_menu || g_sp != SP_OFF || !g_gfont_ok || !in_stage()) { g_hud_ingame = 0; return; }
+  Ppu* p = g_snes->ppu;
+  if (p->mode != 1 || g_bottom_mode != 1 || !p->layer[2].mainScreenEnabled || p->bgLayer[2].bigTiles || !hf_find()) { g_hud_ingame = 0; return; }
+  hud_build();
+  Bg3Cfg cfg2[2] = {sp_cfg_now(), g_sp_bottom};
+  int ncfg = memcmp(&cfg2[0], &cfg2[1], sizeof(Bg3Cfg)) ? 2 : 1;
+  for (int r = 4; r < 10; r++) for (int c = 0; c < CG_W; c++) {
+    uint16_t v = g_cg[r][c];
+    if (!v) continue;
+    uint16_t word = (uint16_t)((g_hf_base + piece_tile(v & 0xFF, g_game)) | (v & 0x1C00) | (v & 0xC000) | 0x2000);
+    for (int k = 0; k < ncfg && g_hc_n < (int)(sizeof g_hc / sizeof g_hc[0]); k++) {
+      uint16_t adr = (uint16_t)sp_mapword(&cfg2[k], c, r);
+      if (k == 1 && adr == g_hc[g_hc_n - 1].adr) continue;
+      g_hc[g_hc_n].adr = adr; g_hc[g_hc_n].orig = p->vram[adr]; g_hc[g_hc_n].wrote = word;
+      p->vram[adr] = word; g_hc_n++;
+    }
+  }
+}
+static void hud_lift(void) {   // the game's words back (unless the game has written there itself since)
+  Ppu* p = g_snes->ppu;
+  for (int i = g_hc_n - 1; i >= 0; i--) if (p->vram[g_hc[i].adr] == g_hc[i].wrote) p->vram[g_hc[i].adr] = g_hc[i].orig;
+  g_hc_n = 0;
+}
 static int sp_saved_state(uint8_t* out) {
   if (g_sp != SP_ON || !g_sp_snap) return 0;
   memcpy(out, g_sp_snap, g_sp_snap_len);
   return g_sp_snap_len;
 }
-static void menus_after_vblank(void) { option_menu_tick(); stage_menu_tick(); }
+static void menus_after_vblank(void) { option_menu_tick(); stage_menu_tick(); hud_tick(); }
 
 // leaving a sub-screen or page: back to the option screen when that is where it was opened from
 static void menu_escape(void) {
@@ -1401,7 +1485,8 @@ static void menu_escape(void) {
 // ---------------------------------------------------------------- scripted test runs
 // SSW_AUTOTEST="w600 k:Return w30 shot:title.ppm q" plays a script instead of a person: wN waits N frames,
 // k:<SDL key name> taps a key (_ for a space in the name), shot:<file> writes the next normal (not
-// widescreen) picture, menus included, as a 512x448 PPM (widescreen: its own width x 224), q quits. For checking the menus without a screen.
+// widescreen) picture, menus included, as a 512x448 PPM (widescreen: its own width x 224), toast:<n>
+// shows achievement n's pop-up, q quits. For checking the menus without a screen.
 static const char* g_at;
 static int g_at_wait;
 static SDL_Keycode g_at_up;
@@ -1423,6 +1508,7 @@ static void autotest_tick(void) {
   if (tok[0] == 'w') g_at_wait = atoi(tok + 1);
   else if (!strncmp(tok, "k:", 2)) { g_at_up = SDL_GetKeyFromName(tok + 2); at_key(g_at_up, true); }
   else if (!strncmp(tok, "shot:", 5)) snprintf(g_at_shot, sizeof g_at_shot, "%s", tok + 5);
+  else if (!strncmp(tok, "toast:", 6)) { g_toast_id = atoi(tok + 6); g_toast_timer = 240; }   // show an achievement pop-up
   else if (!strcmp(tok, "q")) g_quit = true;
 }
 static void autotest_shot_wide(const uint32_t* wb, int stride, int x0, int w) {   // the widescreen picture, w x 224

@@ -29,13 +29,18 @@ T-Man wants the menus to be part of the games, drawn by the game (no overlays). 
   Start injected again on close (`stage_menu_tick`). Empire switches BG3 mid-frame below its HUD, so both
   BG3 set-ups get the menu. Save state saves the snapshot taken just before pausing.
 - Mode 7 stages: no BG3 below the HUD (mode switch mid-frame), so the pause menu is still drawn over the
-  picture (`draw_menu`, same look). Achievement pop-ups and the speedrun timer are also still drawn over.
+  picture (`draw_menu`, same look).
+- Achievement pop-up and speedrun timer (test 3): in side-scrolling stages written into BG3 under the HUD
+  with the stage's own HUD font (found by searching BG3 tiles for the captured glyphs, `hf_find`), every
+  frame after vblank (`hud_tick`) and taken out again after each frame (`hud_lift`, called from
+  `sp_after_frame`) so snapshots never contain them. Title and Mode 7 stages: still drawn over (`draw_hud`).
+  `SSW_AUTOTEST` has `toast:<n>` to show a pop-up.
 - Menu screens are built once as a BG3 cell grid (`cg_*`, `menu_build`), box pieces as codes mapped per
   game (`GameDef.t_box`: Empire's are one lower than Super Star Wars').
 - Test without a screen: `SSW_AUTOTEST="w900 k:Return w60 shot:a.ppm q" SDL_VIDEODRIVER=dummy ./ssw`.
 
 ## Still open
-1. Ideas: Mode 7 pause in-game (would need forcing mode 1 on the menu's lines), pop-ups in-game.
+1. Ideas: Mode 7 pause, pop-ups and timer in-game (would need forcing mode 1 on those lines).
 2. Return of the Jedi (ROM USA Rev 1, SHA-1 b8dca1cd...).
 3. MSU packs: map the real pack track numbers into msu/msu.txt, msu-esb/msu.txt, add RotJ.
    T-Man needs to re-upload the packs.
