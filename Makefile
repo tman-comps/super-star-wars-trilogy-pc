@@ -223,3 +223,6 @@ $(WEBUILD)/%.o: %.c
 	$(WINCC) $(WCFLAGS) -DNO_SSW -c $< -o $@
 esb.exe: $(W_LAKE) $(patsubst %.c,$(WBUILD)/%.o,$(GEN_ESB)) $(patsubst %.c,$(WEBUILD)/%.o,$(COMMON) src/main_sdl.c)
 	$(WINCC) -o $@ $^ -L$(SDLWIN)/lib -lmingw32 -lSDL2main -lSDL2 -mwindows -static-libgcc
+
+ssw_luke: $(LAKE_O) $(GEN_O) $(COM_O) $(BUILD)/src/test_luke.o
+	$(CC) -o $@ $^
