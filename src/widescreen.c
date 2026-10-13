@@ -196,6 +196,27 @@ static int desc_matches_line(int layer, int x, int y) {
   }
   return checked >= 2 && varied;   // a row of one repeated tile proves nothing (blank sky, a stage card)
 }
+// Super Star Wars (the build-12 test, which was right on every stage): rebuild only the line's two
+// screen-edge tiles from the layer's own descriptor and compare them with VRAM. The strict test above
+// rejects too many good lines here: the game redraws moving scenery (the Sandcrawler) into the
+// playfield tilemap at runtime, so a few tiles in the middle of a line never match the level data.
+static int ssw_line_trusted(int layer, int y) {
+  int x = layer * 2;
+  if (r16(D(0x44A) + x) == 0) return 0;
+  BgLayer* b = &g_s->ppu->bgLayer[layer];
+  int camx = r16(D(0x41A) + x), camy = r16(D(0x422) + x);
+  int ly = (y + b->vScroll) & 0x3ff;
+  int wy = unwrap(ly, 1024, camy + y);
+  int checked = 0;
+  for (int sx = 0; sx < 256; sx += 248) {
+    int lx = (sx + b->hScroll) & 0x3ff;
+    int t = level_tile(x, unwrap(lx, 1024, camx + sx) >> 3, wy >> 3);
+    if (t < 0) continue;
+    checked++;
+    if ((uint16_t)t != vram_tile(layer, lx, ly)) return 0;
+  }
+  return checked > 0;
+}
 // Which descriptor draws this line of the layer? Super Star Wars always pairs descriptor n with BG n;
 // Empire sometimes doesn't (e.g. BG2/BG3 from descriptors 1/2 with BG1 as the HUD), so the others
 // are tried too, the layer's own first.
@@ -205,9 +226,11 @@ static int line_desc(int layer) {
   if (g_trust_frame[layer][y] == g_frame_no) return g_trust[layer][y];
   g_trust_frame[layer][y] = g_frame_no;
   int found = -1;
-  if (desc_matches_line(layer, layer * 2, y)) found = layer * 2;
-  if (W->grid_words)   // Empire only: Super Star Wars always pairs descriptor n with BG n
+  if (!W->grid_words) found = ssw_line_trusted(layer, y) ? layer * 2 : -1;
+  else {   // Empire: the layer's own descriptor first, then the others
+    if (desc_matches_line(layer, layer * 2, y)) found = layer * 2;
     for (int x = 0; x < 8 && found < 0; x += 2) if (x != layer * 2 && desc_matches_line(layer, x, y)) found = x;
+  }
   g_trust[layer][y] = found;
   return found;
 }
@@ -216,6 +239,7 @@ static int g_kind;   // 1 = side-scrolling stage (mode $04), 2 = Mode 7 stage (m
                      // 4:3 because its cockpit is a wrapping background layer)
 static int ws_tile(void* ctx, int layer, int lx, int ly) {
   (void)ctx; (void)ly;
+  if (layer == 2 && g_ws_mask_bg3 && !W->grid_words) return -2;   // Super Star Wars' BG3 is always the HUD: keep it 4:3
   if (g_kind != 1) return layer == 2 && g_ws_mask_bg3 ? -2 : -1;   // Mode 7 stages: other layers wrap in VRAM
   int x = line_desc(layer);
   if (x < 0) return layer == 2 && g_ws_mask_bg3 ? -2 : -1;   // HUD/text (BG3 kept 4:3), or not streamed: VRAM wraps
@@ -224,7 +248,10 @@ static int ws_tile(void* ctx, int layer, int lx, int ly) {
   int wx = unwrap(lx, 1024, camx + sx);
   int wy = unwrap(ly, 1024, camy + sy);
   int t = level_tile(x, wx >> 3, wy >> 3);
-  return t < 0 ? -2 : t;   // outside the map or an empty cell: nothing there (not the wrapped VRAM copy)
+  // Outside the map or an empty cell. Empire: nothing there. Super Star Wars: the wrapped VRAM copy,
+  // as in build 12 (its levels keep scenery in the tilemap that the level data leaves empty).
+  if (t < 0) return W->grid_words ? -2 : -1;
+  return t;
 }
 
 void ws_init(Snes* s, const uint8_t* rom, int romlen) {
@@ -290,10 +317,10 @@ int ws_update(int extra_wanted) {
   uint16_t mode = r16(g_game->r_mode);
   // Mode 7 stages: the plane simply continues past the old edges (the PPU's Mode 7 fetch takes any x)
   g_kind = (mode == 0x0004 && g_s->ppu->mode != 7) ? 1 : (mode == W->m7_modes[0] || mode == W->m7_modes[1]) && g_ws_mode7 ? 2 : 0;
-  if (g_kind == 1) {   // a screen no layer of which comes from the level data (stage cards, fades): keep it 4:3
+  if (g_kind == 1 && W->grid_words) {   // Empire: a screen no layer of which comes from the level data (stage cards, fades): keep it 4:3
     int any = 0;
     for (int l = 0; l < 3 && !any; l++) for (int y = 48; y < 224 && !any; y += 40)
-      for (int x = 0; x < 8 && !any; x += 2) if ((x == l * 2 || W->grid_words) && desc_matches_line(l, x, y)) any = 1;
+      for (int x = 0; x < 8 && !any; x += 2) if (desc_matches_line(l, x, y)) any = 1;
     if (!any) g_kind = 0;
   }
   if (g_kind == 1 && !W->grid_words) {   // Super Star Wars' stage cards ("LUKE READY!") swap the tile graphics
@@ -305,6 +332,20 @@ int ws_update(int extra_wanted) {
   }
   int scene = g_s->ram[g_game->r_scene];
   for (int i = 0; i < 4; i++) if (W->keep43[i][0] && W->keep43[i][0] == mode && W->keep43[i][1] == scene) g_kind = 0;
+  // Super Star Wars: past either end of the level map there is nothing to show (the game never
+  // scrolls there), so those columns are black, like the edge of the world
+  g_s->ppu->wideClipL = -PPU_WIDE_MAX; g_s->ppu->wideClipR = 256 + PPU_WIDE_MAX;
+  if (g_kind == 1 && !W->grid_words) {
+    int l = 0, r = 0, any = 0;
+    for (int x = 0; x < 6; x += 2) {
+      int w = r16(D(0x44A) + x); if (!w) continue;
+      int cam = r16(D(0x41A) + x);
+      if (!any || -cam < l) l = -cam;
+      if (!any || w * 256 - cam > r) r = w * 256 - cam;
+      any = 1;
+    }
+    if (any) { g_s->ppu->wideClipL = l; g_s->ppu->wideClipR = r; }
+  }
   int extra = g_kind ? extra_wanted : 0;
   if (extra > PPU_WIDE_MAX) extra = PPU_WIDE_MAX;
   if (extra != g_s->ppu->wideExtra) {

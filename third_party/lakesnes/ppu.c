@@ -84,6 +84,7 @@ Ppu* ppu_init(Snes* snes) {
   ppu->wideBuffer = NULL;
   ppu->wideTileHook = NULL;
   ppu->wideCtx = NULL;
+  ppu->wideClipL = -PPU_WIDE_MAX; ppu->wideClipR = 256 + PPU_WIDE_MAX;
   ppu->curScreenX = 0;
   return ppu;
 }
@@ -373,7 +374,7 @@ static void ppu_handlePixel(Ppu* ppu, int x, int y) {
   if(ppu->wideBuffer) {
     int wr = (y - 1) < 0 ? 0 : (y - 1) > 239 ? 239 : (y - 1);
     int R = ((r << 3) | (r >> 2)) * ppu->brightness / 15, G = ((g << 3) | (g >> 2)) * ppu->brightness / 15, B = ((b << 3) | (b >> 2)) * ppu->brightness / 15;
-    if(ppu->forcedBlank) R = G = B = 0;
+    if(ppu->forcedBlank || x < ppu->wideClipL || x >= ppu->wideClipR) R = G = B = 0;
     ppu->wideBuffer[wr * (256 + 2 * PPU_WIDE_MAX) + x + PPU_WIDE_MAX] = (R << 16) | (G << 8) | B;
   }
   if(x < 0 || x >= 256) return;
