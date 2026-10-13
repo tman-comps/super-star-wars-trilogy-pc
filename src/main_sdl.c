@@ -457,13 +457,57 @@ static void rumble_tick(void) {
   }
   last_hp = play ? hp : -1; last_lives = play ? lives : -1;
 }
+// Remove slowdown. The side-scrolling stages run a game step every frame on the console unless busy, so
+// the faster CPU just removes the dips. The Mode 7 stages (speeders, flights) are always busy: a step
+// takes 3-5 frames there, and the stages were balanced at that speed -- with the faster CPU all the time
+// they ran up to 3x faster (playtest of build 13: twice the damage on the landspeeder), and even held to
+// the usual pace they stayed as dangerous, because the NMI then finds a finished step every frame
+// instead of once a step. So there the CPU runs at the console's speed and is only made faster for a
+// step that is running late: from the last frame of the stage's usual pace (GameDef.paces, or measured
+// over its first steps) until the step is done. The game behaves as on the console, without the dips
+// (landspeeder, same random input: 65 damage a minute on the console, 80 with this, 160 before).
+// Boot and loaders keep the real CPU timing.
+static int g_pace;                  // the stage's usual frames per step (0 = not known yet)
+static int g_pace_since, g_pace_flag_was;
+static int g_pace_key = -1, g_pace_cal[16], g_pace_cal_n, g_pace_cal_since;
 static void update_overclock(void) {
   extern int g_snes_overclock;
-  // only in the side-scrolling stages: boot and some loaders rely on real CPU timing, and the Mode 7
-  // stages (speeders, flights) were balanced at the speed they run on the console -- sped up, enemies
-  // and shots come about twice as fast (playtest of build 13: the landspeeder took twice the damage)
-  g_snes_overclock = cfg.no_slowdown && in_stage();
+  uint8_t* ram = g_snes->ram;
+  int mode = game_mode(ram), key = mode << 8 | game_scene(ram);
+  if (!cfg.no_slowdown || !game_is_play_mode(mode)) { g_snes_overclock = 0; g_pace = 0; g_pace_key = -1; return; }
+  if (mode == 0x0004) { g_snes_overclock = 1; g_pace = 0; return; }
+  if (!g_game->r_step_flag) { g_snes_overclock = 0; return; }
+  if (key != g_pace_key) {   // a new stage: its pace from the table, else measure it first (at the console's speed)
+    g_pace_key = key; g_pace = 0; g_pace_cal_n = 0; g_pace_cal_since = -1; memset(g_pace_cal, 0, sizeof g_pace_cal);
+    for (int i = 0; g_game->paces && g_game->paces[i][0]; i++)
+      if (g_game->paces[i][0] == mode && g_game->paces[i][1] == game_scene(ram)) g_pace = g_game->paces[i][2];
+    if (g_pace) crashlog_event("pace %d frames per step (table)", g_pace);
+    g_snes_overclock = 0; g_pace_since = 0;
+  }
+  // otherwise pace_tick decides, frame by frame
 }
+// once per frame after vblank (runner hook): measure the pace, or speed up a late step
+static void pace_tick(void) {
+  extern int g_snes_overclock;
+  if (g_pace_key < 0 || !g_game->r_step_flag) return;
+  uint8_t* f = &g_snes->ram[g_game->r_step_flag];
+  bool step = g_pace_flag_was && !*f;   // the NMI has just taken a finished step's sprites
+  if (!g_pace) {   // measuring at the console's speed: the most common interval of 48 steps (after 16)
+    if (g_pace_cal_since >= 0) g_pace_cal_since++;
+    if (step) {
+      if (g_pace_cal_since > 0 && g_pace_cal_since < 16 && ++g_pace_cal_n > 16) g_pace_cal[g_pace_cal_since]++;
+      g_pace_cal_since = 0;
+      if (g_pace_cal_n >= 64) {
+        int best = 1; for (int i = 1; i < 16; i++) if (g_pace_cal[i] > g_pace_cal[best]) best = i;
+        g_pace = best; crashlog_event("pace %d frames per step (measured)", g_pace);
+      }
+    }
+    return;
+  }
+  if (step) g_pace_since = 0; else g_pace_since++;
+  g_snes_overclock = g_pace_since >= g_pace - 1;   // frame g_pace of the step (or later): finish it now
+}
+static void pace_after_frame(void) { if (g_game->r_step_flag) g_pace_flag_was = g_snes->ram[g_game->r_step_flag] != 0; }
 
 // ---------------------------------------------------------------- menu overlay (drawn into the 512x480 frame)
 static int g_ach_screen;          // achievements list shown inside the menu
@@ -1260,6 +1304,7 @@ static int g_hc_n;
 static void sp_after_frame(void) {   // in vblank, before the game's NMI
   g_sp_bottom = sp_cfg_now(); g_bottom_mode = g_snes->ppu->mode;
   hud_lift();
+  pace_after_frame();
 }
 static struct { bool math[6], add_sub, sub, half; uint8_t fr, fg, fb, clip, prevent; } g_sp_ppu;
 static bool sp_possible(void) {
@@ -1470,7 +1515,7 @@ static int sp_saved_state(uint8_t* out) {
   memcpy(out, g_sp_snap, g_sp_snap_len);
   return g_sp_snap_len;
 }
-static void menus_after_vblank(void) { option_menu_tick(); stage_menu_tick(); hud_tick(); }
+static void menus_after_vblank(void) { option_menu_tick(); stage_menu_tick(); hud_tick(); pace_tick(); }
 
 // leaving a sub-screen or page: back to the option screen when that is where it was opened from
 static void menu_escape(void) {

@@ -12,8 +12,13 @@ Previous note: claude/handoff-build14.md.
 - Known, pre-existing: Sandcrawler interior 04/01, first door: BG1 has a hole right of the door that
   the game fills at runtime when the door opens; a small patch shows in the right extra area until
   then. Grid and chunk cache don't change, so the fill is a direct tilemap write. Not fixed.
-- Remove slowdown: only in mode $04 now. In the Mode 7 stages it doubled the damage taken
-  (0E04/0E05, same random input: ~69 -> ~128 per minute). Cause of feedback item 2.
+- Remove slowdown (test 4): side-scrolling stages overclocked as before. Mode 7 stages run at the
+  console's speed and only a step that runs late is overclocked (from the last frame of the stage's
+  usual pace, `GameDef.paces` or measured over its first steps; step flag `GameDef.r_step_flag`). Holding
+  the step flag instead does NOT work: the NMI then sees a finished step every frame and the stage stays
+  as dangerous. Landspeeder damage per minute, same random input: console 65, full overclock 160,
+  boost 80; Empire snowspeeder 61 / 139 / 82. Mode 08 (SSW) and $12 (Empire asteroids) don't use the
+  flag and keep the console's speed (they run full speed or aren't affected anyway).
 - Clear stage / Level select: developer flag only for 8 frames (`g_dev_pulse`); the first Start
   after Level select goes to the game (`g_debug_menu`); Developer features off clears the game's flag.
 - Reports: ssw_report_<date>_<time>.txt/.state (and ssw_crash_...).
