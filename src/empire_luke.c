@@ -76,12 +76,13 @@ static void build_map(void) {
   for (int k = 52; k <= 56; k++) set(k, k - 6, 0, 0);      // knocked down, dying
   for (int k = 57; k <= 61; k++) set(k, 0, 0, 0);
   set(67, 72, 0, 0); set(68, 73, 0, 0);                    // turn, stand
-  set(69, 7, 113, 0);                                      // stand and shoot: upper body + standing legs
+  set(69, 7, 113, 0);                                      // stand and shoot (blaster): upper body + standing legs
   for (int k = 70; k <= 72; k++) set(k, 0, 0, 0);
-  for (int k = 76; k <= 86; k++) set(k, 7, 113, 0);        // aim forward
-  set(80, 11, 113, 0); set(81, 13, 113, 0); set(82, 13, 113, 0); set(83, 9, 113, 0);   // diagonal up, up, diagonal down
-  for (int k = 87; k <= 97; k++) set(k, 7, 3, -9);         // aim while jumping
-  for (int k = 98; k <= 109; k++) set(k, 76, 0, 0);        // aim while crouching
+  // lightsaber swings (Super Star Wars' blade is drawn on top): Empire's swing upper bodies holding the hilt
+  static const int16_t swing[11] = {136, 136, 137, 138, 139, 127, 128, 139, 139, 136, 136};
+  for (int k = 76; k <= 86; k++) set(k, swing[k - 76], 113, 0);                // standing: + standing legs
+  for (int k = 87; k <= 97; k++) set(k, swing[k - 87], 3, -9);                 // jumping: + bent legs
+  for (int k = 98; k <= 109; k++) set(k, k - 98 < 11 ? swing[k - 98] : 136, 2, -3);   // crouching: + crouched legs
   for (int k = 124; k <= 132; k++) set(k, 152 + (k - 124 < 7 ? k - 124 : 7), 0, 0);   // somersault
 }
 
