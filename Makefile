@@ -20,7 +20,7 @@ LAKE    := $(addprefix third_party/lakesnes/,spc.c dsp.c apu.c cpu.c dma.c ppu.c
 GEN     := $(wildcard gen/recomp_*.c)
 GEN_ESB := $(wildcard gen_esb/recomp_*.c)
 GEN_ROTJ := $(wildcard gen_rotj/recomp_*.c)
-COMMON  := src/game.c src/runner.c src/widescreen.c src/msu.c src/achievements.c src/achievements_esb.c src/achievements_game.c src/restore.c src/steam.c src/extras.c src/crashlog.c src/rom_check.c
+COMMON  := src/game.c src/runner.c src/widescreen.c src/msu.c src/achievements.c src/achievements_esb.c src/achievements_rotj.c src/achievements_game.c src/restore.c src/steam.c src/extras.c src/crashlog.c src/rom_check.c
 
 BUILD   := build
 LAKE_O  := $(patsubst %.c,$(BUILD)/%.o,$(LAKE))

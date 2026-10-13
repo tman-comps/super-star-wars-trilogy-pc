@@ -78,7 +78,7 @@ const GameDef g_esb = {
 
 #ifndef NO_ROTJ
 // Super Return of the Jedi (USA) (Rev 1): same Sculptured engine, moved around in RAM.
-// Recompiled code, scene table, stage list, menus, MSU-1 music. No widescreen or achievements yet.
+// Recompiled code, scene table, stage list, menus, MSU-1 music, achievements. No widescreen yet.
 int rotj_recomp_run(Cpu* cpu);
 extern const uint32_t rotj_g_hook_addrs[];
 static const uint8_t k_rotj_stages[][2] = {   // play order, from the game's scene sequence table
@@ -95,14 +95,14 @@ const GameDef g_rotj = {
   0x200000, 0x4A5F30D8,
   RECOMP(rotj_recomp_run), rotj_g_hook_addrs,
   0x01BE, 0x01C0, 0x01B2, 0x0C58, 0x1130, 0x11A8,   // Empire's 01B6 01B8 01AC 0CF6 11CE 1246
-  0, 0x0C58,
+  0x0BB8, 0x0C58,                                    // object types (slot 0 = the hero) and HP
   0x0110, 0x0114, 0x60, 0x40, 0x20, "FORCE POWERS", "ENDLESS BOMBS", 99,
   0x0627, 0x06, 0x15, 0x14, 0x12, 0x06, 0x17,
   0x4000, 0x100,
   0x0731, {0x2100, 0},       // option-screen cursor, window 1 table (indirect HDMA, 224 lines)
   {0x04, 0x0C, 0x12, 0x14, 0x0A},
   k_rotj_stages, k_rotj_names, (int)(sizeof k_rotj_stages / 2),
-  GF_TITLE_CRED | GF_MSU,
+  GF_TITLE_CRED | GF_MSU | GF_ACH,
   // BG3 tilemap copy at $7F:1440 (uploaded to VRAM $1000, not $0800 as in the others), INIDISP shadow
   // $7B (reads 8 in the pause loop), box pieces as in Empire (side $156, corner $157, edge $158, font $100),
   // step flag $0B59 (Empire's $0BB3), paces measured while playing; the stage skip is controller 1

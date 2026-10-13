@@ -18,6 +18,7 @@
 //   CODE=XXBAY     enter a title-screen code (letters A B X Y L R, u/d = up/down) from frame CODE_AT
 //   WILD=1         interpreter: stop and print the code path the first time code runs outside ROM
 //   CARDS=prefix   screenshots every 10 frames of each hero select card (mode 08), prefix_SS_n.ppm
+//   ACH=dir/       run the achievements (as if no cheats were on; dir/srotj_achievements.txt) and print unlocks
 //   INPUT=file     replay "frame mask" lines (hex SNES button mask) instead of the random play
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,7 @@
 #include "runner.h"
 #include "recomp_rt.h"
 #include "game.h"
+#include "achievements.h"
 int rotj_recomp_run(Cpu* cpu);
 extern const uint32_t rotj_g_hook_addrs[];
 extern uint8_t* g_cdl;
@@ -110,6 +112,7 @@ int main(int argc, char** argv) {
   Snes* snes = snes_init();
   snes_loadRom(snes, rom + off, len - off);
   if (getenv("WATCHW")) { extern uint8_t (*g_snes_write_filter)(Snes*, uint32_t, uint8_t); g_watch = (int)strtol(getenv("WATCHW"), 0, 16); g_snes_write_filter = watch_filter; }
+  if (getenv("ACH")) { ach_init(snes, getenv("ACH")); ach_set_rom(snes->cart->rom); }
   int play = 0, pm = -1, ps = -1;
   for (int f = 0; f < frames; f++) {
   static uint8_t pixels[512 * 480 * 4];
@@ -149,6 +152,7 @@ int main(int argc, char** argv) {
     } else
     runner_frame(snes);
     m = game_mode(snes->ram); sc = game_scene(snes->ram);
+    if (getenv("ACH")) { ach_update(0); int id; while ((id = ach_pop_toast()) >= 0) { const char *t, *d; ach_get(id, &t, &d); fprintf(stderr, "f%d UNLOCK %s\n", f, t); } }
     {   // CARDS=prefix: a screenshot of every stage card / hero select (mode 08), 90 frames in
       static int card_at = -1;
       static int card_n, card_k;
