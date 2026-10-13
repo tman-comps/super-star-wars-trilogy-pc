@@ -1,0 +1,9 @@
+# code/data labels:  <snes address> <name>   (Super Return of the Jedi, USA Rev 1)
+808627 Seq_Table             # 4-byte rows: cur mode, cur scene (FF=any), next mode, next scene; FF-terminated
+8086FE Seq_AdvanceScene      # look up (mode,scene) in Seq_Table, enter the next mode
+808790 EnterMode             # A = mode: reset the stack, common init, then the mode's init through $85FB,x
+80B6F4 SetScene              # A = scene
+8083A3 Dev_StageSkip         # developer flag + controller 1 B+Start (called from 808C48)
+8083BF Dev_Pad2              # developer flag: controller 2 L+R opens the developer menu
+80E62F LoseLife              # dec Lives; game over goes to (06,16)
+80F61E Crawl_Skip            # Start during the opening crawl: scene $12, mode $14 (immediates at 80F62D / 80F634)

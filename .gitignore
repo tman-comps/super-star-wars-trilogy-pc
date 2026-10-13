@@ -96,6 +96,8 @@ build-*/
 /ssw_test
 /ssw_*
 /esb_*
+/rotj
+/rotj_*
 third_party/SDL2-mingw/
 
 # Python caches

@@ -1,0 +1,2 @@
+# Port hook points (see analysis/esb/hooks.txt). None yet for Super Return of the Jedi: the
+# widescreen visibility hooks come with the widescreen work.

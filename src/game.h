@@ -44,14 +44,14 @@ typedef struct GameDef {
   uint8_t tm_items, tm_first_row;    // the game's items, on every second row from tm_first_row
   uint8_t tm_box_top, tm_box_bottom; // border rows
   uint16_t tm_window[2];             // WRAM per-line window tables (2 bytes a line) that darken the box
-  uint8_t play_modes[4];             // GameMode values that are gameplay (0 = unused)
+  uint8_t play_modes[6];             // GameMode values that are gameplay (0 = unused)
   const uint8_t (*stages)[2];        // play order (mode, scene) for continue / level numbers
   const char* const* stage_names;
   int nstages;
   unsigned features;
 } GameDef;
 
-extern const GameDef g_ssw, g_esb;
+extern const GameDef g_ssw, g_esb, g_rotj;
 extern const GameDef* const g_all_games[];   // NULL-terminated, in trilogy order
 extern const GameDef* g_game;                // the one running
 
