@@ -25,7 +25,7 @@ Both finished games run in one program as a trilogy (after one game's ending the
 - **Speedrun timer** with per-stage splits and saved personal bests, plus play statistics.
 - **Rewind:** hold Backspace or the left trigger.
 - **CRT filter** (scanlines or full CRT), **colour styles**, **sprite flicker removal** and crisper sound interpolation.
-- **Orchestral music** through your own MSU-1 audio packs (see `msu/` and `msu-esb/`).
+- **Orchestral music** through your own MSU-1 audio packs (see `msu/`, `msu-esb/` and `msu-rotj/`; set up for the standard Conn & Relikk MSU-1 packs).
 - **Extras** unlocked by beating a game or entering one of its original cheat codes: the developers' own level-select debug menu, Lightsaber start and Hero select (Star Wars), and All Force powers and Infinite thermal detonators (Empire).
 - **Restored cut content** (Super Star Wars, off by default): a reconstruction of the Death Star stage left in the cartridge but cut before release. See `docs/CUT_CONTENT.md`.
 - Rumble, full keyboard and controller rebinding, 60 fps at any resolution, and crash reports you can send.

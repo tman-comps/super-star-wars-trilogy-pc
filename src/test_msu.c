@@ -31,8 +31,8 @@ int main(int argc, char** argv) {
   msu_enable(1);
   run(1500, 0, 0);
   run(4, 1 << BTN_START, 1); run(60, 0, 1);
-  run(4, 1 << BTN_START, 1); run(600, 0, 1);    // crawl plays (track 4)
+  run(4, 1 << BTN_START, 1); run(600, 0, 1);    // crawl plays (song 01)
   for (int i = 0; i < 4; i++) { run(4, 1 << BTN_START, 1); run(120, 0, 1); }
-  run(900, 1 << BTN_RIGHT, 1);                  // Dune Sea (track 5)
+  run(900, 1 << BTN_RIGHT, 1);                  // stage start fanfare (song 0B, finishes first), then Dune Sea (song 09)
   return 0;
 }
