@@ -31,6 +31,7 @@ const GameDef g_ssw = {
   k_ssw_stages, NULL, (int)(sizeof k_ssw_stages / 2),
   GF_WIDESCREEN | GF_RESTORED | GF_MSU | GF_ACH | GF_TITLE_CRED,
   0x9800, 0x005A, {0x55, 0x57, 0x58, 0x59, 0x5A}, 0x0997, k_ssw_paces,
+  0x0800, 2, 1 << 3,
 };
 #else
 int recomp_run(Cpu* cpu) { (void)cpu; return RECOMP_MISS; }
@@ -71,23 +72,24 @@ const GameDef g_esb = {
   k_esb_stages, k_esb_names, (int)(sizeof k_esb_stages / 2),
   GF_TITLE_CRED | GF_ACH | GF_MSU | GF_WIDESCREEN,
   0x13400, 0x006E, {0x54, 0x56, 0x57, 0x58, 0x59}, 0x0BB3, k_esb_paces,
+  0x0800, 2, 1 << 3,
 };
 #endif
 
 #ifndef NO_ROTJ
 // Super Return of the Jedi (USA) (Rev 1): same Sculptured engine, moved around in RAM.
-// Groundwork only so far: recompiled code, scene table, stage list. No widescreen/achievements/MSU yet.
+// Recompiled code, scene table, stage list, menus, MSU-1 music. No widescreen or achievements yet.
 int rotj_recomp_run(Cpu* cpu);
 extern const uint32_t rotj_g_hook_addrs[];
 static const uint8_t k_rotj_stages[][2] = {   // play order, from the game's scene sequence table
   {0x14,0x12},{0x04,0x02},{0x04,0x07},{0x04,0x01},{0x04,0x08},{0x04,0x05},{0x04,0x06},{0x12,0x11},
   {0x04,0x0A},{0x04,0x0B},{0x04,0x03},{0x0C,0x10},{0x04,0x09},{0x04,0x0F},{0x14,0x13},{0x04,0x0E},
   {0x04,0x0C},{0x04,0x0D},{0x0A,0x01},{0x0A,0x02}};
-static const char* const k_rotj_names[] = {   // from the stage cards where shown; others provisional
-  "TATOOINE", "PALACE GATES", "JABBA'S PALACE", "DANCE HALL", "RANCOR PIT", "ATTACK ON SAIL BARGE",
+static const char* const k_rotj_names[] = {   // the hero select cards' AREA names (the vehicle stages have none)
+  "LANDSPEEDER", "TATOOINE", "JABBA'S DANCE HALL", "JABBA'S PALACE", "RANCOR PIT", "SAIL BARGE ATTACK",
   "INSIDE SAIL BARGE", "SPEEDER BIKES", "EWOK VILLAGE A", "EWOK VILLAGE B", "ENDOR", "SPACE BATTLE",
-  "POWER GENERATOR", "DEATH STAR ENTRANCE", "DEATH STAR SURFACE", "TOWER", "VADER", "EMPEROR'S CHAMBER",
-  "REACTOR TUNNEL", "REACTOR CORE"};
+  "POWER GENERATOR", "INSIDE DEATH STAR", "DEATH STAR SURFACE", "TOWER", "TOWER ENTRANCE", "EMPEROR'S CHAMBER",
+  "DEATH STAR TUNNEL", "REACTOR ESCAPE"};
 const GameDef g_rotj = {
   "srotj", "Super Return of the Jedi", "RETURN OF THE JEDI", "srotj.sfc", "Super Return of the Jedi (USA) (Rev 1)", "msu-rotj",
   0x200000, 0x4A5F30D8,
@@ -97,14 +99,16 @@ const GameDef g_rotj = {
   0x0110, 0x0114, 0x60, 0x40, 0x20, "FORCE POWERS", "ENDLESS BOMBS", 99,
   0x0627, 0x06, 0x15, 0x14, 0x12, 0x06, 0x17,
   0x4000, 0x100,
-  0, {0, 0},                 // option-screen cursor and window table: not found yet
+  0x0731, {0x2100, 0},       // option-screen cursor, window 1 table (indirect HDMA, 224 lines)
   {0x04, 0x0C, 0x12, 0x14, 0x0A},
   k_rotj_stages, k_rotj_names, (int)(sizeof k_rotj_stages / 2),
-  0,
-  // BG3 tilemap copy at $7F:1440 (title screen; Jedi uploads it to VRAM $1000, not $0800 as the others),
-  // INIDISP shadow $7B (reads 8 in the pause loop), box pieces as in Empire (title box: side $156,
-  // corner $157, edge $158 from font $100), step flag $0B59 (Empire's $0BB3), paces measured while playing
+  GF_TITLE_CRED | GF_MSU,
+  // BG3 tilemap copy at $7F:1440 (uploaded to VRAM $1000, not $0800 as in the others), INIDISP shadow
+  // $7B (reads 8 in the pause loop), box pieces as in Empire (side $156, corner $157, edge $158, font $100),
+  // step flag $0B59 (Empire's $0BB3), paces measured while playing; the stage skip is controller 1
+  // B+Start ($80:8C31), not controller 2 Start
   0x11440, 0x007B, {0x54, 0x56, 0x57, 0x58, 0x59}, 0x0B59, NULL,
+  0x1000, 1, (1 << 0) | (1 << 3),
 };
 #endif
 

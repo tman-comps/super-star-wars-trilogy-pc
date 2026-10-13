@@ -137,8 +137,9 @@ static void set_btn(int b, bool down) {
   }
 }
 static uint16_t g_btn_inject;   // pressed for the game by the port (the pause menu's Start), see stage_menu_tick
+static uint16_t pad1_extra(void);
 static void push_buttons(void) {
-  uint16_t b = g_btn_down | g_btn_inject;
+  uint16_t b = g_btn_down | g_btn_inject | pad1_extra();
   for (int i = 0; i < 12; i++) snes_setButtonState(g_snes, 1, i, (b >> i) & 1);
   g_btn_seen = g_btn_down;
 }
@@ -199,6 +200,7 @@ static void check_unlock(void) {
                (g->code_lives && title && ram[g->r_lives] == g->code_lives));
   if (!UNLOCKED && (beat || code)) { cfg.unlocked |= g_game_bit(); cfg_save(); crashlog_event("extras unlocked (%s)", beat ? "beaten" : "code"); }
 }
+static void pad1_tick(void);
 static void apply_dev_flags(void) {
   uint8_t* ram = g_snes->ram;
   check_unlock();
@@ -221,6 +223,7 @@ static void apply_dev_flags(void) {
   if (cfg.hero) *c |= g->cheat_b;
   for (int i = 0; i < 12; i++) snes_setButtonState(g_snes, 2, i, g_pad2_hold > 0 && ((g_pad2_mask >> i) & 1));
   if (g_pad2_hold > 0) g_pad2_hold--;
+  pad1_tick();
 }
 // Start during a stage opens the pause menu (the original only freezes the game, nothing on screen).
 // Not the first Start after the menu's Level select: that one picks the stage in the game's menu.
@@ -230,7 +233,13 @@ static bool start_opens_pause(int b, bool down) {
   return cfg.pause_menu && game_is_play_mode(game_mode(g_snes->ram));
 }
 static void level_select(void) { g_dev_pulse = 8; g_debug_menu = true; pad2_press((1 << BTN_L) | (1 << BTN_R)); }
-static void stage_clear(void) { g_dev_pulse = 8; pad2_press(1 << BTN_START); }
+// the developer stage skip: Star Wars and Empire take Start on controller 2, Jedi B+Start on controller 1.
+// On controller 1 it waits until the game runs again (the pause menu presses Start to resume first).
+static uint16_t g_pad1_mask; static int g_pad1_hold, g_pad1_wait;
+static void stage_clear(void) {
+  if (g_game->clear_pad == 1) { g_pad1_mask = g_game->clear_buttons; g_pad1_hold = 0; g_pad1_wait = 120; }
+  else { g_dev_pulse = 8; pad2_press(g_game->clear_buttons); }
+}
 
 static void update_title(void) {
   char t[200];
@@ -411,7 +420,7 @@ static bool title_credit_active(void) {
   const GameDef* g = g_game;
   if (!(g->features & GF_TITLE_CRED)) return false;
   if (!(game_mode(r) == g->title_mode && game_scene(r) == g->title_scene)) return false;
-  return (g_snes->ppu->vram[0x800 + 26 * 32 + 6] & 0x3ff) == g->font_base + 0x25;   // title text in place ("L")
+  return (g_snes->ppu->vram[(g->bg3_map + 26 * 32 + 6) & 0x7fff] & 0x3ff) == g->font_base + 0x25;   // title text in place ("L")
 }
 static void title_credit(uint32_t* buf, int stride, int x0, int y0, int scale) {
   if (!title_credit_active()) return;
@@ -728,7 +737,7 @@ static void font_from_vram(Snes* sn) {   // when the title screen's text is in V
 static bool title_text_ready(Snes* sn) {
   const GameDef* g = g_game;
   return game_mode(sn->ram) == g->title_mode && game_scene(sn->ram) == g->title_scene &&
-         (sn->ppu->vram[0x800 + 26 * 32 + 6] & 0x3ff) == g->font_base + 0x25;
+         (sn->ppu->vram[(g->bg3_map + 26 * 32 + 6) & 0x7fff] & 0x3ff) == g->font_base + 0x25;
 }
 // load the cached font, or boot a hidden copy of the game to its title screen and take it from there
 static void font_capture(const uint8_t* rom, int len, const char* dir) {
@@ -1208,33 +1217,71 @@ static void toast_tick(void) {
 
 // ---------------------------------------------------------------- GAME OPTION MENU: PC SETTINGS / ACHIEVEMENTS
 // The option screen is BG3 text from a tilemap copy in WRAM (GameDef.bg3_shadow) that the game uploads to
-// VRAM $0800. Its upper box (rows 8-16) lists DIFFICULTY and SOUND on rows 12 and 14, and the selected
-// value blinks (palette 3 / 0). While it is on screen we draw that box four rows higher, after the game's
+// VRAM (GameDef.bg3_map). Its upper box lists DIFFICULTY and SOUND on rows 12 and 14, and the selected
+// value blinks (palette 3 / 0). While it is on screen we draw that box higher up, after the game's
 // uploads, with our two rows under the game's in the same spacing and colours, and start the window that
-// darkens the artwork behind it four rows higher too. We keep our own cursor and set the game's to match.
+// darkens the artwork behind it higher up too. We keep our own cursor and set the game's to match.
+// The box: Star Wars and Empire rows 8-16 (heading on row 9, a blank row under its underline), Jedi
+// rows 9-15 (heading on row 10, no blank rows above and below the items).
+// Jedi's title logo reaches further down (sprites), so there the boxes hide the sprites they cover.
+typedef struct { int title_row, first, n, blank; int8_t src[13]; bool hide_obj; } OmLayout;   // new rows first.. from src
+static const OmLayout k_om_layouts[] = {   // src -1 / -2: our items, on a copy of the blank row
+  {9, 4, 13, 11, {8, 9, 10, 11, 12, 13, 14, 15, -1, 11, -2, 15, 16}, false},
+  {10, 6, 11, 13, {9, 10, 11, 12, 13, 14, 13, -1, 13, -2, 15}, true},
+};
+static const OmLayout* g_om_lay = &k_om_layouts[0];
 static int g_om_sel;            // g_om_sel: 0-1 the game's items, 2 PC SETTINGS, 3 ACHIEVEMENTS
 static unsigned g_om_tick;
-static inline uint16_t* bg3_cell(int row, int col) { return &g_snes->ppu->vram[(0x800 + row * 32 + col) & 0x7fff]; }
+static inline uint16_t* bg3_cell(int row, int col) { return &g_snes->ppu->vram[(g_game->bg3_map + row * 32 + col) & 0x7fff]; }
 static uint16_t om_shadow(int row, int col) {
   uint32_t a = g_game->bg3_shadow + (row * 32 + col) * 2;
   return g_snes->ram[a & 0x1ffff] | g_snes->ram[(a + 1) & 0x1ffff] << 8;
 }
 static int om_glyph(int c) { int t = gfont_tile(c); return t < 0 ? -1 : t - 0x180 + g_game->font_base; }
-static bool om_visible(void) {   // the title mode with "GAME OPTION MENU" on row 9
+static bool om_visible(void) {   // the title mode with "GAME OPTION MENU" on the heading row of one of the layouts
   const GameDef* g = g_game; uint8_t* r = g_snes->ram;
   if (!g->bg3_shadow || !g_gfont_ok || game_mode(r) != g->title_mode || game_scene(r) != g->title_scene) return false;
-  return (om_shadow(9, 8) & 0x3ff) == om_glyph('G') && (om_shadow(9, 15) & 0x3ff) == om_glyph('T') &&
-         (om_shadow(9, 20) & 0x3ff) == om_glyph('M');
+  for (unsigned i = 0; i < sizeof k_om_layouts / sizeof k_om_layouts[0]; i++) {
+    int t = k_om_layouts[i].title_row;
+    if ((om_shadow(t, 8) & 0x3ff) == om_glyph('G') && (om_shadow(t, 15) & 0x3ff) == om_glyph('T') &&
+        (om_shadow(t, 20) & 0x3ff) == om_glyph('M')) { g_om_lay = &k_om_layouts[i]; return true; }
+  }
+  return false;
+}
+// sprites under the upper box (lines top-135, x 32-231) moved off screen in the uploaded OAM, put back when
+// the screen is left unless the game has uploaded new OAM since
+static uint16_t g_om_oam[0x100], g_om_oam_wrote[0x100]; static uint8_t g_om_hioam[0x20]; static bool g_om_oam_on;
+static void om_hide_sprites(int top) {
+  static const int k_sizes[8][2] = {{8, 16}, {8, 32}, {8, 64}, {16, 32}, {16, 64}, {32, 64}, {16, 32}, {16, 32}};
+  Ppu* p = g_snes->ppu;
+  if (!g_om_oam_on || memcmp(p->oam, g_om_oam_wrote, sizeof g_om_oam_wrote)) {   // the game's OAM (new upload)
+    memcpy(g_om_oam, p->oam, sizeof g_om_oam); memcpy(g_om_hioam, p->highOam, sizeof g_om_hioam);
+  }
+  for (int i = 0; i < 128; i++) {
+    int y = g_om_oam[2 * i] >> 8, x = (g_om_oam[2 * i] & 0xff) | ((g_om_hioam[i >> 2] >> ((i & 3) * 2)) & 1) << 8;
+    int size = k_sizes[p->objSize & 7][(g_om_hioam[i >> 2] >> ((i & 3) * 2 + 1)) & 1];
+    if (x >= 256) x -= 512;
+    bool under = y < 224 && y + size > top && y < 136 && x + size > 32 && x < 232;
+    p->oam[2 * i] = under ? (uint16_t)((g_om_oam[2 * i] & 0x00ff) | 0xF000) : g_om_oam[2 * i];
+  }
+  memcpy(g_om_oam_wrote, p->oam, sizeof g_om_oam_wrote);
+  g_om_oam_on = true;
+}
+static void om_show_sprites(void) {
+  if (!g_om_oam_on) return;
+  Ppu* p = g_snes->ppu;
+  if (!memcmp(p->oam, g_om_oam_wrote, sizeof g_om_oam_wrote)) memcpy(p->oam, g_om_oam, sizeof g_om_oam);
+  g_om_oam_on = false;
 }
 static void om_put(int row, int col, const char* t, uint16_t attr) {
   for (; *t; t++, col++) { int gt = om_glyph(*t); if (gt >= 0) *bg3_cell(row, col) = (uint16_t)(gt | attr); }
 }
 // the window that darkens the artwork behind the boxes: the game's (x 32-232 on lines 64-135 and 144-215,
-// the same in both games) with the upper box starting 32 lines higher
-static void om_window_put(void) {   // the table window 1 is fed from (indirect HDMA to $2126/$2127, 2 bytes a line)
+// the same in all three games) with the upper box starting at line top
+static void om_window_put(int top) {   // the table window 1 is fed from (indirect HDMA to $2126/$2127, 2 bytes a line)
   uint8_t* w = &g_snes->ram[g_game->tm_window[0] & 0x1ffff];
   for (int y = 0; y < 224; y++) {
-    bool on = (y >= 32 && y < 136) || (y >= 144 && y < 216);
+    bool on = (y >= top && y < 136) || (y >= 144 && y < 216);
     w[y * 2] = on ? 32 : 255; w[y * 2 + 1] = on ? 232 : 0;
   }
 }
@@ -1250,26 +1297,28 @@ static void om_draw_menu(void) {
                         v ? (uint16_t)((g_game->font_base + piece_tile(v & 0xFF, g_game)) | (v & 0x1C00) | (v & 0xC000) | 0x2000) : blank;
     }
   }
-  om_window_put();   // the same two boxes as the option screen
+  om_window_put(32);   // the same two boxes as the option screen, the upper one from row 4
+  if (g_om_lay->hide_obj) om_hide_sprites(32);
 }
 // once per frame, after the game's vblank uploads and before the picture is drawn (runner hook)
 static void option_menu_tick(void) {
   if (!om_visible()) {
     if (g_om_on && g_menu && g_menu_bg3) open_menu(false);   // the game left the screen under our menu
     g_om_on = 0;
+    om_show_sprites();
     return;
   }
   if (!g_om_on) { g_om_on = 1; g_om_sel = 0; }
   if (g_menu && g_menu_bg3) { om_draw_menu(); return; }
-  for (int r = 0; r < CG_H; r++) if (r < 4 || r > 16) for (int c = 0; c < 32; c++) *bg3_cell(r, c) = om_shadow(r, c);
+  const OmLayout* L = g_om_lay;
+  for (int r = 0; r < CG_H; r++) if (r < L->first || r >= L->first + L->n) for (int c = 0; c < 32; c++) *bg3_cell(r, c) = om_shadow(r, c);
   g_om_tick++;
   bool blink = (g_om_tick / 16) & 1;
   uint16_t lab = om_shadow(12, 17) & 0xE000;   // priority and flips of the game's text (palette set per item)
-  // new rows 4-16, from the game's rows 8-16 (-1, -2: our two items on a blank row)
-  static const int8_t k_src[13] = {8, 9, 10, 11, 12, 13, 14, 15, -1, 11, -2, 15, 16};
-  for (int k = 0; k < 13; k++) {
-    int row = 4 + k, src = k_src[k];
-    for (int c = 0; c < 32; c++) *bg3_cell(row, c) = om_shadow(src < 0 ? 11 : src, c);
+  // the new upper box, from the game's (-1, -2: our two items on a blank row)
+  for (int k = 0; k < L->n; k++) {
+    int row = L->first + k, src = L->src[k];
+    for (int c = 0; c < 32; c++) *bg3_cell(row, c) = om_shadow(src < 0 ? L->blank : src, c);
     if ((src == 12 || src == 14) && g_om_sel >= 2)   // one of ours is selected: the game's value stops blinking
       for (int c = 18; c < 28; c++) { uint16_t* p = bg3_cell(row, c); if (((*p >> 10) & 7) == 3) *p &= ~0x1C00; }
     if (src < 0) {
@@ -1277,7 +1326,8 @@ static void option_menu_tick(void) {
       om_put(row, 6, i ? "ACHIEVEMENTS" : "PORT SETTINGS", lab | (g_om_sel == 2 + i && blink ? 3 : 2) << 10);
     }
   }
-  om_window_put();
+  om_window_put(L->first * 8);
+  if (L->hide_obj) om_hide_sprites(L->first * 8);
   // the game's cursor follows ours (its last item while ours is on one of our rows)
   g_snes->ram[g_game->tm_cursor] = (uint8_t)(g_om_sel < 2 ? g_om_sel : 1);   // low byte only
 }
@@ -1539,6 +1589,16 @@ static int sp_saved_state(uint8_t* out) {
   if (g_sp != SP_ON || !g_sp_snap) return 0;
   memcpy(out, g_sp_snap, g_sp_snap_len);
   return g_sp_snap_len;
+}
+// the controller-1 stage skip (stage_clear): pressed once the game is running again, the developer flag on
+static uint16_t pad1_extra(void) { return g_pad1_hold > 0 ? g_pad1_mask : 0; }
+static void pad1_tick(void) {
+  if (g_pad1_hold > 0 && --g_pad1_hold == 0) g_pad1_mask = 0;
+  if (g_pad1_wait > 0) {
+    if (!g_menu && g_sp == SP_OFF && !sp_paused() && game_is_play_mode(game_mode(g_snes->ram))) {
+      g_dev_pulse = 8; g_pad1_hold = 4; g_pad1_wait = 0;
+    } else if (--g_pad1_wait == 0) g_pad1_mask = 0;
+  }
 }
 static void menus_after_vblank(void) { option_menu_tick(); stage_menu_tick(); hud_tick(); pace_tick(); }
 

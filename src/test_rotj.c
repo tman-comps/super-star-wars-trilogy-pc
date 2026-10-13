@@ -10,12 +10,14 @@
 //   CLEAR=n        every n frames of play, use the developer stage skip (developer flag on, B+Start)
 //   TRACE=1        print every mode/scene change to stderr
 //   SHOTS=prefix   screenshot file prefix (default shot)
+//   PPUINFO=1      print the windows and the active HDMA channels at the end
 //   VRAMDUMP=file  write VRAM and CGRAM at the end, print the BG base addresses
 //   RAMDUMP=file   write WRAM at the end
 //   RAMLOG=file    append the first 8 KB of WRAM after every frame (for finding RAM variables)
 //   WATCHW=addr    print the code address of every CPU write to that WRAM address (hex, bank 7E)
 //   CODE=XXBAY     enter a title-screen code (letters A B X Y L R, u/d = up/down) from frame CODE_AT
 //   WILD=1         interpreter: stop and print the code path the first time code runs outside ROM
+//   CARDS=prefix   screenshots every 10 frames of each hero select card (mode 08), prefix_SS_n.ppm
 //   INPUT=file     replay "frame mask" lines (hex SNES button mask) instead of the random play
 #include <stdio.h>
 #include <stdlib.h>
@@ -108,9 +110,9 @@ int main(int argc, char** argv) {
   Snes* snes = snes_init();
   snes_loadRom(snes, rom + off, len - off);
   if (getenv("WATCHW")) { extern uint8_t (*g_snes_write_filter)(Snes*, uint32_t, uint8_t); g_watch = (int)strtol(getenv("WATCHW"), 0, 16); g_snes_write_filter = watch_filter; }
-  static uint8_t pixels[512 * 480 * 4];
   int play = 0, pm = -1, ps = -1;
   for (int f = 0; f < frames; f++) {
+  static uint8_t pixels[512 * 480 * 4];
     int m = game_mode(snes->ram), sc = game_scene(snes->ram);
     int playing = game_is_play_mode(m);
     uint16_t b = script_buttons(f, playing);
@@ -147,6 +149,19 @@ int main(int argc, char** argv) {
     } else
     runner_frame(snes);
     m = game_mode(snes->ram); sc = game_scene(snes->ram);
+    {   // CARDS=prefix: a screenshot of every stage card / hero select (mode 08), 90 frames in
+      static int card_at = -1;
+      static int card_n, card_k;
+      if (getenv("CARDS") && (m != pm || sc != ps) && m == 0x08 && sc != 0x31) { card_at = f + 10; card_n = 0; card_k++; }
+      if (f == card_at && card_n < 30 && m == 0x08 && sc != 0x31) {
+        card_at += 10; card_n++;
+        snes_setPixels(snes, pixels);
+        char name[256]; snprintf(name, sizeof name, "%s_%02X_%d.ppm", getenv("CARDS"), sc, card_n);
+        FILE* o = fopen(name, "wb"); fprintf(o, "P6 256 224 255\n");
+        for (int y = 0; y < 224; y++) for (int x = 0; x < 256; x++) { uint8_t* q = pixels + ((y * 2 + 16) * 512 + x * 2) * 4; fputc(q[3], o); fputc(q[2], o); fputc(q[1], o); }
+        fclose(o);
+      }
+    }
     if (getenv("TRACE") && (m != pm || sc != ps)) { fprintf(stderr, "f%d mode %02X scene %02X\n", f, m, sc); pm = m; ps = sc; }
     if (getenv("RAMLOG")) { static FILE* rl; if (!rl) rl = fopen(getenv("RAMLOG"), "wb"); fwrite(snes->ram, 1, 0x2000, rl); }
     uint64_t h = 1469598103934665603ull;
@@ -166,6 +181,13 @@ int main(int argc, char** argv) {
       }
       fclose(o);
     }
+  }
+  if (getenv("PPUINFO")) {   // windows and HDMA channels at the end
+    Ppu* p = snes->ppu;
+    fprintf(stderr, "bgmode %d bg3 main %d big %d inidisp-shadow? brightness %d\n", p->mode, p->layer[2].mainScreenEnabled, p->bgLayer[2].bigTiles, p->brightness);
+    fprintf(stderr, "win1 %d-%d win2 %d-%d\nhdma:", p->window1left, p->window1right, p->window2left, p->window2right);
+    for (int i = 0; i < 8; i++) if (snes->dma->channel[i].hdmaActive) fprintf(stderr, " ch%d b=21%02X a=%02X:%04X mode %d ind %d indbank %02X", i, snes->dma->channel[i].bAdr, snes->dma->channel[i].aBank, snes->dma->channel[i].aAdr, snes->dma->channel[i].mode, snes->dma->channel[i].indirect, snes->dma->channel[i].indBank);
+    fprintf(stderr, "\n");
   }
   if (getenv("VRAMDUMP")) { FILE* o = fopen(getenv("VRAMDUMP"), "wb"); fwrite(snes->ppu->vram, 2, 0x8000, o); fwrite(snes->ppu->cgram, 2, 256, o); fclose(o);
     fprintf(stderr, "bg mode %d; bg tileAdr/tilemapAdr:", snes->ppu->mode); for (int i = 0; i < 4; i++) fprintf(stderr, " %04X/%04X", snes->ppu->bgLayer[i].tileAdr, snes->ppu->bgLayer[i].tilemapAdr); fprintf(stderr, "\n"); }
