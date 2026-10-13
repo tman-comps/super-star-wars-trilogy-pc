@@ -137,8 +137,9 @@ static void set_btn(int b, bool down) {
   }
 }
 static uint16_t g_btn_inject;   // pressed for the game by the port (the pause menu's Start), see stage_menu_tick
+static uint16_t g_boot_inject;   // Start presses that skip the next game's logos and title (trilogy hand-over)
 static void push_buttons(void) {
-  uint16_t b = g_btn_down | g_btn_inject;
+  uint16_t b = g_btn_down | g_btn_inject | g_boot_inject;
   for (int i = 0; i < 12; i++) snes_setButtonState(g_snes, 1, i, (b >> i) & 1);
   g_btn_seen = g_btn_down;
 }
@@ -1735,17 +1736,48 @@ static void load_game(const GameDef* g) {
 }
 
 // Trilogy: when a game's ending and credits have played and it returns to its title, go on to the next game.
+// The next game then skips its logos and title by itself and picks up at its opening crawl (song 01; each
+// game keeps its current song number in WRAM, the same address msu.txt's songvar names).
+static int g_skip_intro;          // frames left to keep skipping, 0 = off
+static int g_skip_next;           // set at the hand-over, starts the skip once the next game is loaded
+static int song_now(void) {
+  static const struct { const char* key; uint16_t adr; } k[] = {{"ssw", 0x08DD}, {"esb", 0x01EC}, {"srotj", 0x01EA}};
+  for (int i = 0; i < (int)(sizeof k / sizeof *k); i++) if (!strcmp(g_game->key, k[i].key)) return g_snes->ram[k[i].adr];
+  return -1;
+}
+static void skip_intro_tick(void) {
+  g_boot_inject = 0;
+  if (!g_skip_intro) return;
+  g_skip_intro--;
+  int song = song_now();
+  if (song == 1 || song < 0 || in_stage() || g_menu) { g_skip_intro = 0; return; }   // crawl reached (or unknown game)
+  if (g_skip_intro % 30 < 2) g_boot_inject = 1 << BTN_START;
+}
 static void trilogy_tick(void) {
   static int seen_end;
   static const GameDef* who;
+  skip_intro_tick();
+  static uint32_t still_hash; static int still_frames;
   if (who != g_game) { who = g_game; seen_end = 0; }
   int m = game_mode(g_snes->ram), sc = game_scene(g_snes->ram);
+  int next = game_slot(g_game) + 1;
+  int going_on = cfg.trilogy && g_all_games[next] && g_rom_data[next];
+  // The ending's last card ("The Force will be with you always!") waits for a button. When the picture
+  // has stood still for 8 seconds, press Start for the player so the next game follows by itself.
+  if (seen_end && going_on && !g_menu) {
+    const Ppu* p = g_snes->ppu;
+    uint32_t h = 2166136261u;
+    const uint8_t* parts[] = {(const uint8_t*)p->vram, (const uint8_t*)p->cgram, (const uint8_t*)p->oam, (const uint8_t*)p->bgLayer};
+    const size_t sizes[] = {sizeof p->vram, sizeof p->cgram, sizeof p->oam, sizeof p->bgLayer};
+    for (int k = 0; k < 4; k++) for (size_t i = 0; i < sizes[k]; i += 4) h = (h ^ parts[k][i]) * 16777619u;
+    if (h == still_hash) { if (++still_frames >= 8 * 60 && still_frames % 30 < 2) g_boot_inject = 1 << BTN_START; }
+    else { still_hash = h; still_frames = 0; }
+  } else still_frames = 0;
   if (m == g_game->end_mode && sc == g_game->end_scene) seen_end = 1;
   // the whole ending (credits included) has played once the game is back at its title or rebooting
   else if (seen_end && (m == 0 || (m == g_game->title_mode && sc == g_game->title_scene))) {
     seen_end = 0;
-    int j = game_slot(g_game) + 1;
-    if (cfg.trilogy && g_all_games[j] && g_rom_data[j]) g_switch_to = g_all_games[j];
+    if (going_on) { g_switch_to = g_all_games[next]; g_skip_next = 1; }
   }
 }
 
@@ -1840,6 +1872,7 @@ int main(int argc, char** argv) {
     if (g_switch_to) {   // menu "Game" item or the trilogy hand-over after an ending
       const GameDef* g = g_switch_to; g_switch_to = NULL;
       load_game(g); cfg_save();
+      g_skip_intro = g_skip_next ? 60 * 60 : 0; g_skip_next = 0;
       if (dev) SDL_ClearQueuedAudio(dev);
     }
     autotest_tick();
