@@ -21,6 +21,7 @@
 #include "font8x16.h"
 #include "widescreen.h"
 #include "msu.h"
+#include "empire_luke.h"
 #include "achievements.h"
 #include "restore.h"
 #include "steam.h"
@@ -70,7 +71,8 @@ static struct {
                   // 1 = also spawn at the wide view's edge, 2 = like the original (only the 4:3 view counts)
   int pause_menu; // Start during a stage opens the port's pause menu (0 = the game's own plain pause)
   int m7_damage;  // damage taken in the speeder and flight (Mode 7) stages: 1 = half, 0 = the original's
-} cfg = {ASPECT_4_3, 0, 0, 80, 0, 0, 0, 0, WIDE_OFF, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 100, 0, 0, 1, 0, 0, 1, 1};
+  int eluke;      // Super Star Wars: play as Empire Luke (needs both ROMs; unlocked by beating both games)
+} cfg = {ASPECT_4_3, 0, 0, 80, 0, 0, 0, 0, WIDE_OFF, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 100, 0, 0, 1, 0, 0, 1, 1, 1};
 static const char* k_m7_names[] = {"Original", "High (2x)", "Ultra (4x)"};
 static int g_msu_songs;    // songs mapped in msu/msu.txt (0 = no pack installed)
 
@@ -108,6 +110,7 @@ static void cfg_load(void) {
     else if (!strcmp(k, "last_game")) cfg.last_game = v;
     else if (!strcmp(k, "widescreen_spawning")) cfg.wide_spawn = v < 0 || v > 2 ? 0 : v;
     else if (!strcmp(k, "pause_menu")) cfg.pause_menu = !!v;
+    else if (!strcmp(k, "empire_luke")) cfg.eluke = !!v;
     else if (!strcmp(k, "music_volume")) cfg.music_vol = v < 0 ? 0 : v > 100 ? 100 : v;
     else if (!strncmp(k, "key_", 4) && atoi(k + 4) >= 0 && atoi(k + 4) < 12) g_keymap[atoi(k + 4)] = v;
     else if (!strncmp(k, "pad_", 4) && atoi(k + 4) >= 0 && atoi(k + 4) < 12) g_padmap[atoi(k + 4)] = v;
@@ -120,7 +123,7 @@ static void cfg_save(void) {
   fprintf(f, "aspect=%d\ninteger_scale=%d\nfullscreen=%d\nvolume=%d\nsmooth=%d\nlightsaber_start=%d\nhero_select=%d\nwidescreen=%d\nextras_unlocked=%d\n",
           cfg.aspect, cfg.integer_scale, cfg.fullscreen, cfg.volume, cfg.smooth, cfg.saber, cfg.hero, cfg.wide, cfg.unlocked);
   fprintf(f, "remove_slowdown=%d\norchestral_music=%d\nmode7_detail=%d\nrestored_stage=%d\nrumble=%d\ncrt=%d\nno_sprite_flicker=%d\nsound_interpolation=%d\ncolour=%d\nmusic_volume=%d\nspeedrun_timer=%d\nrewind=%d\nspeeder_damage_half=%d\n", cfg.no_slowdown, cfg.msu, cfg.m7, cfg.restored, cfg.rumble, cfg.crt, cfg.nolimit, cfg.interp, cfg.color, cfg.music_vol, cfg.timer, cfg.rewind, cfg.m7_damage);
-  fprintf(f, "trilogy_continue=%d\nlast_game=%d\nwidescreen_spawning=%d\npause_menu=%d\n", cfg.trilogy, cfg.last_game, cfg.wide_spawn, cfg.pause_menu);
+  fprintf(f, "trilogy_continue=%d\nlast_game=%d\nwidescreen_spawning=%d\npause_menu=%d\nempire_luke=%d\n", cfg.trilogy, cfg.last_game, cfg.wide_spawn, cfg.pause_menu, cfg.eluke);
   for (int i = 0; i < 12; i++) fprintf(f, "key_%d=%d\npad_%d=%d\n", i, (int)g_keymap[i], i, g_padmap[i]);
   fclose(f);
 }
@@ -183,6 +186,10 @@ static int g_game_bit(void) {   // unlock bit of the running game in cfg.unlocke
   return !strcmp(g_game->key, "ssw") ? 1 : !strcmp(g_game->key, "esb") ? 2 : 4;
 }
 #define UNLOCKED (cfg.unlocked & g_game_bit())
+// Empire Luke: unlocked once both Super Star Wars and Empire are unlocked (beaten). ELUKE_TEST opens it
+// for T-Man's test builds; set it to 0 once he has tried it.
+#define ELUKE_TEST 1
+#define ELUKE_UNLOCKED (ELUKE_TEST || (cfg.unlocked & 3) == 3)
 #define HAS(f) (g_game->features & (f))
 // Extras (the two cheat toggles, level select) unlock per game by beating it -- reaching its ending
 // (end_mode/end_scene in game.c) -- or by entering one of the original cheat codes.
@@ -538,7 +545,7 @@ static int g_ach_sel;
 static int g_toast_id = -1, g_toast_timer;
 static int g_sel;
 static bool g_quit;
-enum { M_RESUME, M_ACH, M_STATS, M_TIMER, M_REWIND, M_CONTROLS, M_CONTINUE, M_RESTART, M_WIDE, M_M7, M_SLOW, M_MUSIC, M_RESTORED, M_RUMBLE, M_ASPECT, M_INTEGER, M_SMOOTH, M_CRT, M_COLOR, M_NOLIMIT, M_FULL, M_VOLUME, M_MUSICVOL, M_INTERP, M_SABER, M_HERO, M_DEV, M_LEVEL, M_CLEAR, M_SAVE, M_LOAD, M_REPORT, M_RESET, M_QUIT, M_GAME, M_TRILOGY, M_SPAWN, M_TITLE, M_PAUSEBTN, M_M7DMG,
+enum { M_RESUME, M_ACH, M_STATS, M_TIMER, M_REWIND, M_CONTROLS, M_CONTINUE, M_RESTART, M_WIDE, M_M7, M_SLOW, M_MUSIC, M_RESTORED, M_RUMBLE, M_ASPECT, M_INTEGER, M_SMOOTH, M_CRT, M_COLOR, M_NOLIMIT, M_FULL, M_VOLUME, M_MUSICVOL, M_INTERP, M_SABER, M_HERO, M_DEV, M_LEVEL, M_CLEAR, M_SAVE, M_LOAD, M_REPORT, M_RESET, M_QUIT, M_GAME, M_TRILOGY, M_SPAWN, M_TITLE, M_PAUSEBTN, M_M7DMG, M_ELUKE,
        M_PG_VIDEO, M_PG_AUDIO, M_PG_GAME, M_PG_EXTRAS, M_PG_OPTIONS, M_COUNT };
 // menu pages: lists of item ids, -1 terminated. Built per game (build_pages): items for features a game
 // doesn't have yet are left out.
@@ -549,7 +556,7 @@ static const int k_pg_options_all[] = {M_GAME, M_PG_VIDEO, M_PG_AUDIO, M_PG_GAME
 static const int k_pg_video_all[] = {M_WIDE, M_SPAWN, M_M7, M_ASPECT, M_INTEGER, M_SMOOTH, M_CRT, M_COLOR, M_NOLIMIT, M_FULL, -1};
 static const int k_pg_audio_all[] = {M_VOLUME, M_MUSIC, M_MUSICVOL, M_INTERP, -1};
 static const int k_pg_game_all[] = {M_SLOW, M_M7DMG, M_TIMER, M_REWIND, M_RUMBLE, M_PAUSEBTN, M_RESTORED, M_TRILOGY, -1};
-static const int k_pg_extras_all[] = {M_SABER, M_HERO, M_LEVEL, M_CLEAR, M_DEV, -1};
+static const int k_pg_extras_all[] = {M_SABER, M_HERO, M_ELUKE, M_LEVEL, M_CLEAR, M_DEV, -1};
 #define NPAGES 6
 static const int* const k_pages_all[NPAGES] = {k_pg_main_all, k_pg_video_all, k_pg_audio_all, k_pg_game_all, k_pg_extras_all, k_pg_options_all};
 static int k_pages_buf[NPAGES][24];
@@ -567,6 +574,7 @@ static bool item_present(int id) {
     case M_RESTORED: return f & GF_RESTORED;
     case M_ACH: return f & GF_ACH;
     case M_GAME: case M_TRILOGY: return g_games_avail > 1;
+    case M_ELUKE: return !strcmp(g_game->key, "ssw") && eluke_ready();
   }
   return true;
 }
@@ -932,6 +940,7 @@ static void menu_label(int i, char* out, int n) {
     case M_COLOR: { static const char* c[] = {"Original", "Vivid", "Soft (TV)"}; snprintf(out, n, "Colours: %s", c[cfg.color]); break; }
     case M_SABER: snprintf(out, n, "%s: %s", g_game->cheat_a_name, !UNLOCKED ? "Locked" : cfg.saber ? "On" : "Off"); break;
     case M_HERO: snprintf(out, n, "%s: %s", g_game->cheat_b_name, !UNLOCKED ? "Locked" : cfg.hero ? "On" : "Off"); break;
+    case M_ELUKE: snprintf(out, n, "EMPIRE LUKE: %s", !ELUKE_UNLOCKED ? "Locked" : cfg.eluke ? "On" : "Off"); break;
     case M_GAME: snprintf(out, n, "Game: %s", !strcmp(g_game->key, "esb") ? "Empire" : !strcmp(g_game->key, "srotj") ? "Jedi" : "Star Wars"); break;
     case M_TRILOGY: snprintf(out, n, "At the end: %s", cfg.trilogy ? "Next game" : "Same game"); break;
     case M_SPAWN: snprintf(out, n, "Enemies: %s", cfg.wide_spawn == 1 ? "Spawn early" : cfg.wide_spawn == 2 ? "Like SNES" : "Shown"); break;
@@ -1112,6 +1121,7 @@ static void menu_change(int dir, bool activate) {
     case M_COLOR: cfg.color = (cfg.color + (dir < 0 ? 2 : 1)) % 3; break;
     case M_SABER: if (UNLOCKED) cfg.saber ^= 1; break;
     case M_HERO: if (UNLOCKED) cfg.hero ^= 1; break;
+    case M_ELUKE: if (ELUKE_UNLOCKED) cfg.eluke ^= 1; break;
     case M_GAME: if (g_games_avail > 1) { g_switch_to = next_game(dir < 0 ? -1 : 1); g_menu = false; } break;
     case M_TRILOGY: cfg.trilogy ^= 1; break;
     case M_SPAWN: cfg.wide_spawn = (cfg.wide_spawn + (dir < 0 ? 2 : 1)) % 3; break;
@@ -1670,6 +1680,15 @@ static void find_roms(int argc, char** argv) {
   }
   g_games_avail = 0;
   for (int i = 0; g_all_games[i]; i++) if (g_rom_data[i]) g_games_avail++;
+  {   // Empire Luke for Super Star Wars, built from both ROMs
+    int si = -1, ei = -1;
+    for (int i = 0; g_all_games[i]; i++) {
+      if (!strcmp(g_all_games[i]->key, "ssw")) si = i;
+      if (!strcmp(g_all_games[i]->key, "esb")) ei = i;
+    }
+    if (si >= 0 && ei >= 0 && g_rom_data[si] && g_rom_data[ei])
+      crashlog_event("empire luke: %s", eluke_init(g_rom_data[si], g_rom_len[si], g_rom_data[ei], g_rom_len[ei]) ? "ready" : "failed");
+  }
   g_rom_problem = problems[0] != 0;
   if (problems[0]) {
     crashlog_event("ROM check: %s", problems);
@@ -1950,7 +1969,7 @@ int main(int argc, char** argv) {
       g_snes->ppu->m7frameUsed = false;
       if (redraw_only && frames == 0) { uint16_t keep = g_btn_down; g_btn_down = 0; push_buttons(); g_btn_down = keep; if (HAS(GF_WIDESCREEN)) { extern int g_ws_spawn_wide, g_ws_objects; g_ws_spawn_wide = cfg.wide_spawn == 1; g_ws_objects = cfg.wide_spawn != 2; ws_update(wide_extra()); } runner_frame(g_snes); }
       if (redraw_only) frames = 0;   // holding rewind with nothing left: pause
-      for (int i = 0; i < frames; i++) { bool sp = g_sp != SP_OFF; if (cfg.rewind && !sp) rewind_record(); g_snes->ppu->noSpriteLimit = cfg.nolimit; { extern int g_dsp_interp; g_dsp_interp = cfg.interp; } push_buttons(); apply_dev_flags(); if (HAS(GF_RESTORED)) restore_update(cfg.restored); update_overclock(); steam_tick(); if (HAS(GF_WIDESCREEN)) { extern int g_ws_spawn_wide, g_ws_objects; g_ws_spawn_wide = cfg.wide_spawn == 1; g_ws_objects = cfg.wide_spawn != 2; ws_update(wide_extra()); } runner_frame(g_snes); sp_after_frame(); after_frame_buttons(); if (!sp) { damage_tick(); autosave_tick(); if (HAS(GF_ACH)) ach_update(g_port_touched || cfg.dev || g_rewound); rumble_tick(); if (HAS(GF_RESTORED)) restore_tick(); trilogy_tick(); extras_frame(g_port_touched || cfg.dev || g_rewound); } crashlog_frame(); if (g_test_crash && --g_test_crash == 0) *(volatile int*)0 = 1; }
+      for (int i = 0; i < frames; i++) { bool sp = g_sp != SP_OFF; if (cfg.rewind && !sp) rewind_record(); g_snes->ppu->noSpriteLimit = cfg.nolimit; { extern int g_dsp_interp; g_dsp_interp = cfg.interp; } push_buttons(); apply_dev_flags(); if (HAS(GF_RESTORED)) restore_update(cfg.restored); update_overclock(); steam_tick(); if (HAS(GF_WIDESCREEN)) { extern int g_ws_spawn_wide, g_ws_objects; g_ws_spawn_wide = cfg.wide_spawn == 1; g_ws_objects = cfg.wide_spawn != 2; ws_update(wide_extra()); } runner_frame(g_snes); sp_after_frame(); after_frame_buttons(); if (!sp) { damage_tick(); autosave_tick(); if (HAS(GF_ACH)) ach_update(g_port_touched || cfg.dev || g_rewound); rumble_tick(); if (HAS(GF_RESTORED)) restore_tick(); trilogy_tick(); if (cfg.eluke && ELUKE_UNLOCKED && !strcmp(g_game->key, "ssw")) eluke_frame(g_snes); extras_frame(g_port_touched || cfg.dev || g_rewound); } crashlog_frame(); if (g_test_crash && --g_test_crash == 0) *(volatile int*)0 = 1; }
       if (dev && !fast) {
         int n = SAMPLE_RATE / 60;
         snes_setSamples(g_snes, g_audio, n);
