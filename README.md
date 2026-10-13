@@ -19,7 +19,7 @@ Both finished games run in one program as a trilogy (after one game's ending the
 - **Native speed, faithful gameplay.** The recompiled code is checked frame for frame against the reference interpreter on every stage.
 - **Widescreen** 16:10, 16:9 and 21:9 for the side-scrolling and Mode 7 stages. The extra columns are rebuilt from each game's level data. A *Wide enemies* setting chooses between enemies shown in the wide view (default), the stricter original 4:3 behaviour, or early spawning.
 - **Mode 7 detail.** The speeder and flight stages are redrawn at 2× or 4× resolution.
-- **Remove slowdown.** The SNES versions lag in busy scenes; this removes it.
+- **Remove slowdown.** The SNES versions lag in busy scenes; this removes it in the side-scrolling stages. The speeder and flight stages keep their original speed, which their difficulty was balanced for.
 - **Pause menu** on Start: Resume, Restart stage, Continue (auto-save from the start of the last stage), Options, Achievements, Stats, Save/Load state, Quit to title. *PC SETTINGS* and *ACHIEVEMENTS* are also added to each game's own title-screen menu, drawn with the game's own font.
 - **Achievements:** 16 per game, with pop-ups, a list in the menu, and optional Steam support.
 - **Speedrun timer** with per-stage splits and saved personal bests, plus play statistics.

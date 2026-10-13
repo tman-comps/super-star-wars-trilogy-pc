@@ -452,8 +452,10 @@ static void rumble_tick(void) {
 }
 static void update_overclock(void) {
   extern int g_snes_overclock;
-  // only during gameplay: boot and some loaders rely on real CPU timing
-  g_snes_overclock = cfg.no_slowdown && game_is_play_mode(game_mode(g_snes->ram));
+  // only in the side-scrolling stages: boot and some loaders rely on real CPU timing, and the Mode 7
+  // stages (speeders, flights) were balanced at the speed they run on the console -- sped up, enemies
+  // and shots come about twice as fast (playtest of build 13: the landspeeder took twice the damage)
+  g_snes_overclock = cfg.no_slowdown && in_stage();
 }
 
 // ---------------------------------------------------------------- menu overlay (drawn into the 512x480 frame)
