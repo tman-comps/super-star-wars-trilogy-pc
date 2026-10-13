@@ -190,6 +190,7 @@ static int g_game_bit(void) {   // unlock bit of the running game in cfg.unlocke
 // for T-Man's test builds; set it to 0 once he has tried it.
 #define ELUKE_TEST 1
 #define ELUKE_UNLOCKED (ELUKE_TEST || (cfg.unlocked & 3) == 3)
+#define ELUKE_ON (cfg.eluke && ELUKE_UNLOCKED && eluke_ready() && !strcmp(g_game->key, "ssw"))
 #define HAS(f) (g_game->features & (f))
 // Extras (the two cheat toggles, level select) unlock per game by beating it -- reaching its ending
 // (end_mode/end_scene in game.c) -- or by entering one of the original cheat codes.
@@ -202,7 +203,7 @@ static void check_unlock(void) {
   if (cfg.dev || cfg.saber || cfg.hero || g_pad2_hold) g_port_touched = true;
   bool title = mode == g->title_mode && scene == g->title_scene;
   bool code = !g_port_touched &&
-              ((ram[g->r_cheats] & g->cheat_any) || ram[g->r_debug] || ram[g->r_debug + 2] ||
+              ((ram[g->r_cheats] & g->cheat_any & ~(ELUKE_ON ? g->cheat_a : 0)) || ram[g->r_debug] || ram[g->r_debug + 2] ||
                (g->code_lives && title && ram[g->r_lives] == g->code_lives));
   if (!UNLOCKED && (beat || code)) { cfg.unlocked |= g_game_bit(); cfg_save(); crashlog_event("extras unlocked (%s)", beat ? "beaten" : "code"); }
 }
@@ -224,7 +225,7 @@ static void apply_dev_flags(void) {
   uint8_t* c = &ram[g->r_cheats];
   if (cfg.saber != last_saber) { if (cfg.saber) *c |= g->cheat_a; else if (last_saber == 1) *c &= ~g->cheat_a; last_saber = cfg.saber; }
   if (cfg.hero != last_hero) { if (cfg.hero) *c |= g->cheat_b; else if (last_hero == 1) *c &= ~g->cheat_b; last_hero = cfg.hero; }
-  if (cfg.saber) *c |= g->cheat_a;
+  if (cfg.saber || ELUKE_ON) *c |= g->cheat_a;   // Empire Luke has his lightsaber from the start
   if (cfg.hero) *c |= g->cheat_b;
   for (int i = 0; i < 12; i++) snes_setButtonState(g_snes, 2, i, g_pad2_hold > 0 && ((g_pad2_mask >> i) & 1));
   if (g_pad2_hold > 0) g_pad2_hold--;
@@ -1969,7 +1970,7 @@ int main(int argc, char** argv) {
       g_snes->ppu->m7frameUsed = false;
       if (redraw_only && frames == 0) { uint16_t keep = g_btn_down; g_btn_down = 0; push_buttons(); g_btn_down = keep; if (HAS(GF_WIDESCREEN)) { extern int g_ws_spawn_wide, g_ws_objects; g_ws_spawn_wide = cfg.wide_spawn == 1; g_ws_objects = cfg.wide_spawn != 2; ws_update(wide_extra()); } runner_frame(g_snes); }
       if (redraw_only) frames = 0;   // holding rewind with nothing left: pause
-      for (int i = 0; i < frames; i++) { bool sp = g_sp != SP_OFF; if (cfg.rewind && !sp) rewind_record(); g_snes->ppu->noSpriteLimit = cfg.nolimit; { extern int g_dsp_interp; g_dsp_interp = cfg.interp; } push_buttons(); apply_dev_flags(); if (HAS(GF_RESTORED)) restore_update(cfg.restored); update_overclock(); steam_tick(); if (HAS(GF_WIDESCREEN)) { extern int g_ws_spawn_wide, g_ws_objects; g_ws_spawn_wide = cfg.wide_spawn == 1; g_ws_objects = cfg.wide_spawn != 2; ws_update(wide_extra()); } runner_frame(g_snes); sp_after_frame(); after_frame_buttons(); if (!sp) { damage_tick(); autosave_tick(); if (HAS(GF_ACH)) ach_update(g_port_touched || cfg.dev || g_rewound); rumble_tick(); if (HAS(GF_RESTORED)) restore_tick(); trilogy_tick(); if (cfg.eluke && ELUKE_UNLOCKED && !strcmp(g_game->key, "ssw")) eluke_frame(g_snes); extras_frame(g_port_touched || cfg.dev || g_rewound); } crashlog_frame(); if (g_test_crash && --g_test_crash == 0) *(volatile int*)0 = 1; }
+      for (int i = 0; i < frames; i++) { bool sp = g_sp != SP_OFF; if (cfg.rewind && !sp) rewind_record(); g_snes->ppu->noSpriteLimit = cfg.nolimit; { extern int g_dsp_interp; g_dsp_interp = cfg.interp; } push_buttons(); apply_dev_flags(); if (HAS(GF_RESTORED)) restore_update(cfg.restored); update_overclock(); steam_tick(); if (HAS(GF_WIDESCREEN)) { extern int g_ws_spawn_wide, g_ws_objects; g_ws_spawn_wide = cfg.wide_spawn == 1; g_ws_objects = cfg.wide_spawn != 2; ws_update(wide_extra()); } runner_frame(g_snes); sp_after_frame(); after_frame_buttons(); if (!sp) { damage_tick(); autosave_tick(); if (HAS(GF_ACH)) ach_update(g_port_touched || cfg.dev || g_rewound); rumble_tick(); if (HAS(GF_RESTORED)) restore_tick(); trilogy_tick(); if (ELUKE_ON) eluke_frame(g_snes); extras_frame(g_port_touched || cfg.dev || g_rewound); } crashlog_frame(); if (g_test_crash && --g_test_crash == 0) *(volatile int*)0 = 1; }
       if (dev && !fast) {
         int n = SAMPLE_RATE / 60;
         snes_setSamples(g_snes, g_audio, n);
