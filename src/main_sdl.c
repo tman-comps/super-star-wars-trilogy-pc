@@ -168,6 +168,8 @@ static int pad_to_btn(int b) {
 // ---------------------------------------------------------------- developer features
 // All implemented by the original game; the port only flips the game's own flags.
 static int g_pad2_hold;
+static int g_dev_pulse;       // frames left of the developer flag set for a single Level select / Clear stage
+static bool g_debug_menu;     // the game's level-select menu was opened: the next Start goes to the game
 static bool g_port_touched;   // the port set cheat/debug flags itself this session
 static uint16_t g_pad2_mask;
 static void pad2_press(uint16_t mask) { g_pad2_mask = mask; g_pad2_hold = 4; }
@@ -198,7 +200,13 @@ static void apply_dev_flags(void) {
   check_unlock();
   const GameDef* g = g_game;
   if (!UNLOCKED) { cfg.saber = 0; cfg.hero = 0; }
-  if (cfg.dev) { ram[g->r_debug] = 1; ram[g->r_debug + 1] = 0; }
+  // the game's developer flag: on while Developer features is on, and for a few frames around the
+  // menu's Level select / Clear stage (the game only checks it when the controller-2 press arrives)
+  static bool flag_ours;
+  if (g_dev_pulse > 0) g_dev_pulse--;
+  if (cfg.dev || g_dev_pulse) { ram[g->r_debug] = 1; ram[g->r_debug + 1] = 0; flag_ours = true; }
+  else if (flag_ours) { ram[g->r_debug] = 0; ram[g->r_debug + 1] = 0; flag_ours = false; }
+  if (g_debug_menu && !in_stage()) g_debug_menu = false;   // the menu only opens during a stage
   static int last_saber = -1, last_hero = -1;
   static const GameDef* last_game;
   if (last_game != g) { last_saber = last_hero = -1; last_game = g; }
@@ -211,12 +219,14 @@ static void apply_dev_flags(void) {
   if (g_pad2_hold > 0) g_pad2_hold--;
 }
 // Start during a stage opens the pause menu (the original only freezes the game, nothing on screen).
-// Not while developer features are on: the debug menu and stage clear need the game's own Start.
+// Not the first Start after the menu's Level select: that one picks the stage in the game's menu.
 static bool start_opens_pause(int b, bool down) {
-  return b == BTN_START && down && cfg.pause_menu && !cfg.dev && game_is_play_mode(game_mode(g_snes->ram));
+  if (b != BTN_START || !down) return false;
+  if (g_debug_menu) { g_debug_menu = false; return false; }
+  return cfg.pause_menu && game_is_play_mode(game_mode(g_snes->ram));
 }
-static void level_select(void) { cfg.dev = 1; pad2_press((1 << BTN_L) | (1 << BTN_R)); }
-static void stage_clear(void) { cfg.dev = 1; pad2_press(1 << BTN_START); }
+static void level_select(void) { g_dev_pulse = 8; g_debug_menu = true; pad2_press((1 << BTN_L) | (1 << BTN_R)); }
+static void stage_clear(void) { g_dev_pulse = 8; pad2_press(1 << BTN_START); }
 
 static void update_title(void) {
   char t[200];
@@ -778,7 +788,11 @@ static void menu_label(int i, char* out, int n) {
     case M_PG_OPTIONS: snprintf(out, n, "Options..."); break;
     case M_TITLE: snprintf(out, n, "Quit to title screen"); break;
     case M_PAUSEBTN: snprintf(out, n, "Start button: %s", cfg.pause_menu ? "Pause menu" : "Original pause"); break;
-    case M_REPORT: snprintf(out, n, "%s", g_report_timer > 0 ? "Saved ssw_report.txt/.state" : "Report a problem"); break;
+    case M_REPORT:   // the file is ssw_report_<date>_<hh-mm-ss>.txt; the row only has room for the time
+      if (g_report_timer > 0) { const char* r = crashlog_last_report(); size_t l = strlen(r);
+        snprintf(out, n, "Saved report %.2s:%.2s:%.2s", l >= 8 ? r + l - 8 : "", l >= 5 ? r + l - 5 : "", l >= 2 ? r + l - 2 : ""); }
+      else snprintf(out, n, "Report a problem");
+      break;
   }
 }
 static void ach_item(int i, char* out, int n) { const char *t, *d; int got = ach_get(i, &t, &d); snprintf(out, n, "%s%s", got ? "* " : "  ", t); }

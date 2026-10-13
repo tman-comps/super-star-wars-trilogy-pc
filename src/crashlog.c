@@ -1,9 +1,10 @@
 // Crash reports and a running log, so testers can send back what happened.
 //   ssw_log.txt         rewritten at every start; one line per notable event (stage changes, settings,
 //                       state loads, rewinds...). Flushed as it goes.
-//   ssw_crash.txt/.state  written by the crash handler: exception, where, last stage, recent events,
-//                       and a save state from just before the crash (the last good snapshot).
-//   ssw_report.txt/.state written on demand from the menu ("Report a problem").
+//   ssw_crash_<date>_<time>.txt/.state  written by the crash handler: exception, where, last stage,
+//                       recent events, and a save state from just before the crash (the last good snapshot).
+//   ssw_report_<date>_<time>.txt/.state written on demand from the menu ("Report a problem").
+//                       Each one gets its own name, so earlier reports are kept.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,8 +40,14 @@ void crashlog_event(const char* fmt, ...) {
   if (g_log) { fputs(stamped, g_log); fputc('\n', g_log); fflush(g_log); }
 }
 
-static void write_report(const char* base, const char* what) {
-  char p[1200];
+static char g_last_report[64];
+static void write_report(const char* base0, const char* what) {
+  char p[1200], base[64], stamp[32] = "";
+  time_t now = time(NULL);
+  struct tm* lt = localtime(&now);
+  if (lt) strftime(stamp, sizeof stamp, "%Y-%m-%d_%H-%M-%S", lt);
+  snprintf(base, sizeof base, "%s_%s", base0, stamp);
+  snprintf(g_last_report, sizeof g_last_report, "%s", base);
   snprintf(p, sizeof p, "%s%s.txt", g_dir, base);
   FILE* f = fopen(p, "w");
   if (f) {
@@ -117,3 +124,4 @@ void crashlog_report(void) {
   if (s) g_snap_len = snes_saveState(s, g_snap);
   write_report("ssw_report", "REPORT (saved from the menu)");
 }
+const char* crashlog_last_report(void) { return g_last_report; }
