@@ -1542,6 +1542,17 @@ static int sp_saved_state(uint8_t* out) {
 }
 static void menus_after_vblank(void) { option_menu_tick(); stage_menu_tick(); hud_tick(); pace_tick(); }
 
+// The games' own title menu and option screen only take Start (and Select to leave the option screen).
+// There the usual buttons work too: SNES B (pad A, keyboard Z) is Start, SNES A (pad B, keyboard X)
+// is Select on the option screen -- the same confirm / back as in the port's pages.
+static int title_button_map(int b) {
+  uint8_t* r = g_snes->ram;
+  if (g_menu || game_mode(r) != g_game->title_mode || game_scene(r) != g_game->title_scene) return b;
+  if (b == BTN_B) return BTN_START;
+  if (b == BTN_A && g_om_on) return BTN_SELECT;
+  return b;
+}
+
 // leaving a sub-screen or page: back to the option screen when that is where it was opened from
 static void menu_escape(void) {
   if (g_ach_screen) { g_ach_screen = 0; if (g_om_return && g_page == 0) open_menu(false); }
@@ -1859,6 +1870,7 @@ int main(int argc, char** argv) {
           int b = pad_to_btn(bt);
           if (start_opens_pause(b, down)) { open_pause(); break; }
           if (option_menu_key(b, down)) break;
+          b = title_button_map(b);
           if (b >= 0) set_btn(b, down);
           SDL_GameController* gc = SDL_GameControllerFromInstanceID(ev.cbutton.which);
           if (down && gc && SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_BACK) &&
@@ -1888,11 +1900,13 @@ int main(int argc, char** argv) {
             else if (k == SDLK_LEFT) menu_key(0, -1, false);
             else if (k == SDLK_RIGHT) menu_key(0, 1, false);
             else if (k == SDLK_RETURN || k == SDLK_z || k == SDLK_SPACE) menu_key(0, 0, true);
+            else if (k == SDLK_x || k == SDLK_BACKSPACE) menu_escape();   // back, like the pad's B
             break;
           }
           int b = key_to_btn(k);
           if (!ev.key.repeat && start_opens_pause(b, down)) { open_pause(); break; }
           if (!ev.key.repeat && option_menu_key(b, down)) break;
+          b = title_button_map(b);
           if (b >= 0) set_btn(b, down);
           if (k == SDLK_TAB) fast = down;
           if (k == SDLK_BACKSPACE) g_rewinding = down;
