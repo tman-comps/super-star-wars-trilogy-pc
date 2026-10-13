@@ -51,6 +51,9 @@ typedef struct GameDef {
   uint16_t r_inidisp;                // WRAM byte the game copies to INIDISP ($2100); brightness 8 while paused
   uint8_t t_box[5];                  // its menu pieces, as offsets from the font's first tile ($180 in SSW):
                                      // heading underline, box side, box corner, box edge, dot cursor
+  uint16_t r_step_flag;              // WRAM byte the main loop sets when a step's sprites are ready and the NMI
+                                     // clears after uploading them; the Mode 7 stages wait on it (0 = unknown)
+  const uint8_t (*paces)[3];         // {mode, scene, frames}: those stages' usual frames per step, 0-ended
 } GameDef;
 
 extern const GameDef g_ssw, g_esb;
