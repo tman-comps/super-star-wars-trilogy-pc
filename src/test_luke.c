@@ -135,7 +135,12 @@ int main(int argc, char** argv) {
         for (int y = 0; y < 224; y++) for (int x = 0; x < 256; x++) { uint8_t* p = px + ((y * 2 + 16) * 512 + x * 2) * 4; fputc(p[3], o); fputc(p[2], o); fputc(p[1], o); }
         fclose(o); } }
     runner_frame(s);
-    if (getenv("ELUKE")) eluke_frame(s);
+    if (getenv("ELUKE")) { eluke_frame(s); eluke_play(s, b);
+      if (getenv("OBJLOG") && g_f % 10 == 0) { fprintf(stderr, "f%d obj", g_f); for (int i = 1; i < 20; i++) { int h = (int16_t)(s->ram[0xA79 + 2 * i] | s->ram[0xA7A + 2 * i] << 8), t = s->ram[0x9D9 + 2 * i] | s->ram[0x9DA + 2 * i] << 8; if (t || h) fprintf(stderr, " %d:%04X/%d", i, t, h); } fprintf(stderr, "\n"); }
+      if (getenv("HUDLOG") && g_f % 30 == 0) { char t[64]; if (eluke_hud(t, sizeof t)) fprintf(stderr, "f%d hud %s hp %d vy %d\n", g_f, t, s->ram[0xA79], (int16_t)(s->ram[0xFF1] | s->ram[0xFF2] << 8)); } }
+    if (getenv("RAMLOG")) {   // RAMLOG=from:to -> low WRAM ($0000-$1FFF) every frame, appended to ramlog.bin
+      int a0, a1; if (sscanf(getenv("RAMLOG"), "%d:%d", &a0, &a1) == 2 && g_f >= a0 && g_f < a1) {
+        static FILE* rl; if (!rl) rl = fopen("ramlog.bin", "wb"); fwrite(s->ram, 1, 0x2000, rl); fflush(rl); } }
     if (getenv("DUMP") && g_f == atoi(getenv("DUMP"))) {
       FILE* o = fopen("wram.bin", "wb"); fwrite(s->ram, 1, 0x20000, o); fclose(o);
       o = fopen("vram.bin", "wb"); fwrite(s->ppu->vram, 2, 0x8000, o); fclose(o);

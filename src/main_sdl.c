@@ -1510,6 +1510,8 @@ static void hud_build(void) {   // into the cell grid, rows 4-9
       g_hud_ingame |= 2;
     }
   }
+  char force[40];   // Empire Luke: Force meter and the chosen power, row 4 left
+  if (ELUKE_ON && eluke_active(g_snes) && eluke_hud(force, sizeof force)) { cg_text(1, 4, force, PAL_GOLD); g_hud_ingame |= 2; }
   if (g_toast_id >= 0) {   // rows 5-8: the game's box, "ACHIEVEMENT" in gold, the name in green
     const char *t, *d; ach_get(g_toast_id, &t, &d);
     char ttl[32]; snprintf(ttl, sizeof ttl, "%.26s", t);
@@ -1970,7 +1972,7 @@ int main(int argc, char** argv) {
       g_snes->ppu->m7frameUsed = false;
       if (redraw_only && frames == 0) { uint16_t keep = g_btn_down; g_btn_down = 0; push_buttons(); g_btn_down = keep; if (HAS(GF_WIDESCREEN)) { extern int g_ws_spawn_wide, g_ws_objects; g_ws_spawn_wide = cfg.wide_spawn == 1; g_ws_objects = cfg.wide_spawn != 2; ws_update(wide_extra()); } runner_frame(g_snes); }
       if (redraw_only) frames = 0;   // holding rewind with nothing left: pause
-      for (int i = 0; i < frames; i++) { bool sp = g_sp != SP_OFF; if (cfg.rewind && !sp) rewind_record(); g_snes->ppu->noSpriteLimit = cfg.nolimit; { extern int g_dsp_interp; g_dsp_interp = cfg.interp; } push_buttons(); apply_dev_flags(); if (HAS(GF_RESTORED)) restore_update(cfg.restored); update_overclock(); steam_tick(); if (HAS(GF_WIDESCREEN)) { extern int g_ws_spawn_wide, g_ws_objects; g_ws_spawn_wide = cfg.wide_spawn == 1; g_ws_objects = cfg.wide_spawn != 2; ws_update(wide_extra()); } runner_frame(g_snes); sp_after_frame(); after_frame_buttons(); if (!sp) { damage_tick(); autosave_tick(); if (HAS(GF_ACH)) ach_update(g_port_touched || cfg.dev || g_rewound); rumble_tick(); if (HAS(GF_RESTORED)) restore_tick(); trilogy_tick(); if (ELUKE_ON) eluke_frame(g_snes); extras_frame(g_port_touched || cfg.dev || g_rewound); } crashlog_frame(); if (g_test_crash && --g_test_crash == 0) *(volatile int*)0 = 1; }
+      for (int i = 0; i < frames; i++) { bool sp = g_sp != SP_OFF; if (cfg.rewind && !sp) rewind_record(); g_snes->ppu->noSpriteLimit = cfg.nolimit; { extern int g_dsp_interp; g_dsp_interp = cfg.interp; } push_buttons(); apply_dev_flags(); if (HAS(GF_RESTORED)) restore_update(cfg.restored); update_overclock(); steam_tick(); if (HAS(GF_WIDESCREEN)) { extern int g_ws_spawn_wide, g_ws_objects; g_ws_spawn_wide = cfg.wide_spawn == 1; g_ws_objects = cfg.wide_spawn != 2; ws_update(wide_extra()); } runner_frame(g_snes); sp_after_frame(); after_frame_buttons(); if (!sp) { damage_tick(); autosave_tick(); if (HAS(GF_ACH)) ach_update(g_port_touched || cfg.dev || g_rewound); rumble_tick(); if (HAS(GF_RESTORED)) restore_tick(); trilogy_tick(); if (ELUKE_ON) { eluke_frame(g_snes); eluke_play(g_snes, g_btn_down); } extras_frame(g_port_touched || cfg.dev || g_rewound); } crashlog_frame(); if (g_test_crash && --g_test_crash == 0) *(volatile int*)0 = 1; }
       if (dev && !fast) {
         int n = SAMPLE_RATE / 60;
         snes_setSamples(g_snes, g_audio, n);

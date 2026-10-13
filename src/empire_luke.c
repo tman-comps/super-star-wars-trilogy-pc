@@ -34,6 +34,7 @@
 static uint8_t* g_ssw;  static int g_ssw_n;     // Super Star Wars' Luke block (to recognise it in WRAM)
 static uint8_t* g_out;  static int g_out_n;     // ours
 static uint8_t g_pal_ssw[32], g_pal_esb[32], g_face[128];
+static const uint8_t* g_sswrom; static int g_sswlen;
 static int g_ready;
 
 static uint32_t rom_off(uint32_t a) { return ((a >> 16) & 0x7F) * 0x8000 + (a & 0x7FFF); }
@@ -194,6 +195,7 @@ int eluke_init(const uint8_t* ssw_rom, int ssw_len, const uint8_t* esb_rom, int 
   free(g_out); g_out = NULL;
   if (!build(&S, &E)) return 0;
   memcpy(g_pal_ssw, ssw_rom + rom_off(SSW_PAL), 32);
+  g_sswrom = ssw_rom; g_sswlen = ssw_len;
   memcpy(g_pal_esb, esb_rom + rom_off(ESB_PAL), 32);
   memcpy(g_face, esb_rom + rom_off(ESB_FACE), 128);
   g_ready = 1;
@@ -230,4 +232,163 @@ void eluke_frame(Snes* s) {
       for (int i = 0; i < 16; i++) v[i] = g_face[32 * k + 2 * i] | g_face[32 * k + 2 * i + 1] << 8;
     }
   }
+}
+
+// ---------------------------------------------------------------- moves and the Force
+// Super Star Wars object tables (word per slot, slot 0 = player): HP $0A79, script wait $0C59, X $0F51,
+// X speed $0F79, Y $0FC9, Y speed $0FF1 (1/256 px per frame; a jump starts at -1792, gravity +96 a frame).
+// Luke already slides (Down + jump while running) and somersaults (Up + jump) in Super Star Wars.
+#define R_HP 0x0A79
+#define R_WAIT 0x0C59
+#define R_X 0x0F51
+#define R_VX 0x0F79
+#define R_Y 0x0FC9
+#define R_VY 0x0FF1
+#define SLOTS 20
+enum { B_B = 1 << 0, B_UP = 1 << 4, B_LEFT = 1 << 6, B_RIGHT = 1 << 7, B_X = 1 << 9, B_L = 1 << 10, B_R = 1 << 11 };
+// L/R go through the 8 Force powers and the thermal detonators (item 8, 9 per stage, no Force needed)
+#define NSEL 9
+static const char* const k_power[NSEL] = {"HEAL", "ELEVATION", "SLOWDOWN", "SABER CONTROL", "SABER DEFLECT", "FREEZE",
+                                          "INVISIBLE", "MIND CONTROL", "THERMAL DETONATOR"};
+static const uint8_t k_cost[NSEL] = {30, 0, 25, 20, 20, 30, 40, 35, 0};   // Elevation: 1 per 4 frames while held
+static struct {
+  int force;          // 0..100 (x16 inside: g.f16)
+  int f16;
+  int sel;
+  int air, ground, dj_used;
+  int slow, freeze, invis, deflect, mind, saber;   // frames left
+  int hp_max;
+  int16_t keep_vx[SLOTS], keep_vy[SLOTS];
+  int was_frozen;
+  int bombs, facing;   // thermal detonators left; last direction pressed (1 right, -1 left)
+  uint16_t last;
+} g;
+
+static int16_t rw(const uint8_t* r, int a) { return (int16_t)(r[a] | r[a + 1] << 8); }
+static void ww(uint8_t* r, int a, int v) { r[a] = (uint8_t)v; r[a + 1] = (uint8_t)(v >> 8); }
+
+int eluke_active(Snes* s) {
+  return g_ready && g_out && !memcmp(s->ram + WRAM_BLOCK, g_out, 64);   // our sprite set is the player's
+}
+
+// enemies: objects 1-19 that have hit points (shots, effects and pickups don't)
+static int is_enemy(const uint8_t* r, int slot) { return slot > 0 && rw(r, R_HP + 2 * slot) > 0; }
+
+// Send object `slot` an event the way $80:CF91 does: its type's definition ($82:FDCD + type) holds at +$2F a
+// 24-bit pointer to [event][script word] rows ($FF ends); the matching script starts at once. $44 = defeated.
+static int send_event(uint8_t* r, int slot, int ev) {
+  int type = rw(r, 0x09D9 + 2 * slot);
+  if (!g_sswrom || type <= 0 || type > 0xFE) return 0;
+  uint32_t t = rom_off(0x82FDCD) + type;
+  int def = g_sswrom[t] | g_sswrom[t + 1] << 8;
+  if (def < 0x8000) return 0;
+  uint32_t d = rom_off(0x820000 | def);
+  uint32_t st = g_sswrom[d + 0x2F] | g_sswrom[d + 0x30] << 8 | g_sswrom[d + 0x31] << 16;
+  if ((st & 0xFFFF) < 0x8000 || rom_off(st) + 3 * 64 > (uint32_t)g_sswlen) return 0;
+  for (uint32_t o = rom_off(st); g_sswrom[o] != 0xFF; o += 3)
+    if (g_sswrom[o] == ev) {
+      ww(r, 0x0B69 + 2 * slot, ev);
+      ww(r, 0x0B91 + 2 * slot, g_sswrom[o + 1] | g_sswrom[o + 2] << 8);
+      ww(r, 0x0BB9 + 2 * slot, st >> 16);
+      ww(r, 0x0C09 + 2 * slot, 0); ww(r, R_WAIT + 2 * slot, 0);
+      return 1;
+    }
+  return 0;
+}
+
+static void hold_enemies(uint8_t* r, int on) {
+  for (int i = 1; i < SLOTS; i++) {
+    if (!is_enemy(r, i)) continue;
+    if (on) {
+      if (!g.was_frozen) { g.keep_vx[i] = rw(r, R_VX + 2 * i); g.keep_vy[i] = rw(r, R_VY + 2 * i); }
+      if (rw(r, R_WAIT + 2 * i) < 2) ww(r, R_WAIT + 2 * i, 2);   // their scripts wait
+      ww(r, R_VX + 2 * i, 0); ww(r, R_VY + 2 * i, 0);
+    } else if (g.was_frozen) {
+      ww(r, R_VX + 2 * i, g.keep_vx[i]); ww(r, R_VY + 2 * i, g.keep_vy[i]);
+    }
+  }
+  g.was_frozen = on;
+}
+
+void eluke_play(Snes* s, uint16_t held) {
+  uint8_t* r = s->ram;
+  uint16_t pressed = held & ~g.last;
+  g.last = held;
+  if (!eluke_active(s)) { memset(&g, 0, sizeof g); g.last = held; return; }
+  if (!g.f16 && !g.force) { g.f16 = 100 * 16; g.bombs = 9; g.facing = 1; }   // full meter when he first appears (New Game+ Luke)
+  if (held & B_RIGHT) g.facing = 1;
+  if (held & B_LEFT) g.facing = -1;
+  int hp = rw(r, R_HP);
+  if (hp > g.hp_max) g.hp_max = hp;
+
+  // double jump: jump again once while in the air (not straight after take-off)
+  int vy = rw(r, R_VY);
+  if (vy) { g.air++; g.ground = 0; } else if (++g.ground >= 3) { g.air = 0; g.dj_used = 0; }
+  if ((pressed & B_B) && g.air > 6 && !g.dj_used && !(held & B_UP)) { ww(r, R_VY, -1856); g.dj_used = 1; }
+
+  // the Force: L/R choose, X uses (Elevation while held); the meter refills slowly
+  if (pressed & B_L) g.sel = (g.sel + NSEL - 1) % NSEL;
+  if (pressed & B_R) g.sel = (g.sel + 1) % NSEL;
+  if (g.f16 < 100 * 16) g.f16 += 1;   // about 1 point every 16 frames
+  int force = g.f16 / 16;
+  if ((pressed & B_X) && g.sel == 8 && g.bombs > 0) {   // thermal detonator: blasts the enemies ahead
+    g.bombs--;
+    int px = rw(r, R_X) + 64 * g.facing, py = rw(r, R_Y);
+    for (int i = 1; i < SLOTS; i++) {
+      if (!is_enemy(r, i)) continue;
+      int dx = rw(r, R_X + 2 * i) - px, dy = rw(r, R_Y + 2 * i) - py;
+      if (dx > -72 && dx < 72 && dy > -80 && dy < 40) {
+        int h = rw(r, R_HP + 2 * i) - 8;
+        if (h > 0) ww(r, R_HP + 2 * i, h);
+        else if (rw(r, 0x0B69 + 2 * i) < 0x44) { ww(r, R_HP + 2 * i, 0); send_event(r, i, 0x44); }
+      }
+    }
+  } else if ((pressed & B_X) && g.sel != 1 && g.sel != 8 && force >= k_cost[g.sel]) {
+    g.f16 -= k_cost[g.sel] * 16;
+    switch (g.sel) {
+      case 0: ww(r, R_HP, hp + 10 > g.hp_max ? g.hp_max : hp + 10); break;   // heal
+      case 2: g.slow = 6 * 60; break;
+      case 3: g.saber = 60; break;
+      case 4: g.deflect = 6 * 60; break;
+      case 5: g.freeze = 5 * 60; break;
+      case 6: g.invis = 8 * 60; break;
+      case 7: g.mind = 8 * 60; break;
+    }
+  }
+  if (g.sel == 1 && (held & B_X) && g.f16 >= 16) {   // elevation: float up
+    g.f16 -= 4;
+    ww(r, R_VY, vy > -320 ? -320 : vy);
+  }
+  // effects
+  if (g.invis || g.deflect || g.mind) { if (hp < g.hp_max && rw(r, R_HP) < hp) ww(r, R_HP, hp); }
+  if (g.invis || g.deflect || g.freeze || g.mind) ww(r, R_HP, rw(r, R_HP) < hp ? hp : rw(r, R_HP));   // no damage
+  int hold = g.freeze || g.mind || (g.slow && (s->frames & 1));
+  hold_enemies(r, hold);
+  if (g.saber) {   // saber control: the thrown saber hits enemies around Luke
+    if (g.saber % 10 == 0) {
+      int px = rw(r, R_X), py = rw(r, R_Y);
+      for (int i = 1; i < SLOTS; i++) {
+        if (!is_enemy(r, i)) continue;
+        int dx = rw(r, R_X + 2 * i) - px, dy = rw(r, R_Y + 2 * i) - py;
+        if (dx > -112 && dx < 112 && dy > -64 && dy < 32) {
+          int h = rw(r, R_HP + 2 * i) - 4;
+          if (h > 0) ww(r, R_HP + 2 * i, h);
+          else if (rw(r, 0x0B69 + 2 * i) < 0x44) { ww(r, R_HP + 2 * i, 0); send_event(r, i, 0x44); }   // defeated
+        }
+      }
+    }
+  }
+  if (g.slow) g.slow--;
+  if (g.freeze) g.freeze--;
+  if (g.invis) g.invis--;
+  if (g.deflect) g.deflect--;
+  if (g.mind) g.mind--;
+  if (g.saber) g.saber--;
+}
+
+int eluke_hud(char* out, int n) {
+  if (!g_ready || !g.f16) return 0;
+  if (g.sel == 8) snprintf(out, n, "FORCE %d DETONATORS %d", g.f16 / 16, g.bombs);
+  else snprintf(out, n, "FORCE %d %s", g.f16 / 16, k_power[g.sel]);
+  return 1;
 }
