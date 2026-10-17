@@ -1,5 +1,5 @@
 // Game definitions for the trilogy front-end (see game.h).
-// Build with -DNO_ESB for a Super Star Wars-only program, -DNO_SSW for an Empire-only program.
+// Single-game programs leave the others out: -DNO_SSW, -DNO_ESB, -DNO_ROTJ (see the Makefile).
 #include <stddef.h>
 #include "game.h"
 #include "recomp_rt.h"
@@ -31,6 +31,7 @@ const GameDef g_ssw = {
   k_ssw_stages, NULL, (int)(sizeof k_ssw_stages / 2),
   GF_WIDESCREEN | GF_RESTORED | GF_MSU | GF_ACH | GF_TITLE_CRED,
   0x9800, 0x005A, {0x55, 0x57, 0x58, 0x59, 0x5A}, 0x0997, k_ssw_paces,
+  0x0800, 2, 1 << 3,
 };
 #else
 int recomp_run(Cpu* cpu) { (void)cpu; return RECOMP_MISS; }
@@ -39,6 +40,7 @@ const uint32_t g_hook_addrs[] = {0};
 #if defined(SSW_LAUNCHER)
 // launcher build: the interpreter calls the same hook points (keep in sync with analysis/esb/hooks.txt)
 const uint32_t esb_g_hook_addrs[] = {0x80A559, 0x80A565, 0x80DF0A, 0};
+const uint32_t rotj_g_hook_addrs[] = {0x80E0F7, 0x81CC58, 0x81CC64, 0};   // keep in sync with analysis/rotj/hooks.txt
 #endif
 
 #ifndef NO_ESB
@@ -70,6 +72,43 @@ const GameDef g_esb = {
   k_esb_stages, k_esb_names, (int)(sizeof k_esb_stages / 2),
   GF_TITLE_CRED | GF_ACH | GF_MSU | GF_WIDESCREEN,
   0x13400, 0x006E, {0x54, 0x56, 0x57, 0x58, 0x59}, 0x0BB3, k_esb_paces,
+  0x0800, 2, 1 << 3,
+};
+#endif
+
+#ifndef NO_ROTJ
+// Super Return of the Jedi (USA) (Rev 1): same Sculptured engine, moved around in RAM.
+// Recompiled code, scene table, stage list, menus, MSU-1 music, achievements, widescreen.
+int rotj_recomp_run(Cpu* cpu);
+extern const uint32_t rotj_g_hook_addrs[];
+static const uint8_t k_rotj_stages[][2] = {   // play order, from the game's scene sequence table
+  {0x14,0x12},{0x04,0x02},{0x04,0x07},{0x04,0x01},{0x04,0x08},{0x04,0x05},{0x04,0x06},{0x12,0x11},
+  {0x04,0x0A},{0x04,0x0B},{0x04,0x03},{0x0C,0x10},{0x04,0x09},{0x04,0x0F},{0x14,0x13},{0x04,0x0E},
+  {0x04,0x0C},{0x04,0x0D},{0x0A,0x01},{0x0A,0x02}};
+static const char* const k_rotj_names[] = {   // the hero select cards' AREA names (the vehicle stages have none)
+  "LANDSPEEDER", "TATOOINE", "JABBA'S DANCE HALL", "JABBA'S PALACE", "RANCOR PIT", "SAIL BARGE ATTACK",
+  "INSIDE SAIL BARGE", "SPEEDER BIKES", "EWOK VILLAGE A", "EWOK VILLAGE B", "ENDOR", "SPACE BATTLE",
+  "POWER GENERATOR", "INSIDE DEATH STAR", "DEATH STAR SURFACE", "TOWER", "TOWER ENTRANCE", "EMPEROR'S CHAMBER",
+  "DEATH STAR TUNNEL", "REACTOR ESCAPE"};
+const GameDef g_rotj = {
+  "srotj", "Super Return of the Jedi", "RETURN OF THE JEDI", "srotj.sfc", "Super Return of the Jedi (USA) (Rev 1)", "msu-rotj",
+  0x200000, 0x4A5F30D8,
+  RECOMP(rotj_recomp_run), rotj_g_hook_addrs,
+  0x01BE, 0x01C0, 0x01B2, 0x0C58, 0x1130, 0x11A8,   // Empire's 01B6 01B8 01AC 0CF6 11CE 1246
+  0x0BB8, 0x0C58,                                    // object types (slot 0 = the hero) and HP
+  0x0110, 0x0114, 0x60, 0x40, 0x20, "FORCE POWERS", "ENDLESS BOMBS", 99,
+  0x0627, 0x06, 0x15, 0x14, 0x12, 0x06, 0x17,
+  0x4000, 0x100,
+  0x0731, {0x2100, 0},       // option-screen cursor, window 1 table (indirect HDMA, 224 lines)
+  {0x04, 0x0C, 0x12, 0x14, 0x0A},
+  k_rotj_stages, k_rotj_names, (int)(sizeof k_rotj_stages / 2),
+  GF_TITLE_CRED | GF_MSU | GF_ACH | GF_WIDESCREEN,
+  // BG3 tilemap copy at $7F:1440 (uploaded to VRAM $1000, not $0800 as in the others), INIDISP shadow
+  // $7B (reads 8 in the pause loop), box pieces as in Empire (side $156, corner $157, edge $158, font $100),
+  // step flag $0B59 (Empire's $0BB3), paces measured while playing; the stage skip is controller 1
+  // B+Start ($80:8C31), not controller 2 Start
+  0x11440, 0x007B, {0x54, 0x56, 0x57, 0x58, 0x59}, 0x0B59, NULL,
+  0x1000, 1, (1 << 0) | (1 << 3),
 };
 #endif
 
@@ -80,11 +119,16 @@ const GameDef* const g_all_games[] = {
 #ifndef NO_ESB
   &g_esb,
 #endif
+#ifndef NO_ROTJ
+  &g_rotj,
+#endif
   NULL};
-#ifndef NO_SSW
+#if !defined(NO_SSW)
 const GameDef* g_game = &g_ssw;
-#else
+#elif !defined(NO_ESB)
 const GameDef* g_game = &g_esb;
+#else
+const GameDef* g_game = &g_rotj;
 #endif
 
 static uint32_t crc32(const uint8_t* d, int n) {
@@ -105,6 +149,6 @@ const GameDef* game_identify(const uint8_t* d, int len) {
   return NULL;
 }
 int game_is_play_mode(int mode) {
-  for (int i = 0; i < 4; i++) if (g_game->play_modes[i] && g_game->play_modes[i] == mode) return 1;
+  for (int i = 0; i < 6; i++) if (g_game->play_modes[i] && g_game->play_modes[i] == mode) return 1;
   return 0;
 }

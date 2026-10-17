@@ -29,26 +29,37 @@ static const uint8_t* g_rom;
 static int g_romlen;
 
 // Per game: the engine is shared, the RAM layout moved. Empire's layer descriptors are Super Star Wars'
-// moved by $29E-$2AE and its chunk cache by +$514 (found by matching the engine's code, tools/xmatch.py).
+// moved by $29E-$2AE and its chunk cache by +$514; Jedi's are Empire's moved by -$85, its cache by -$1A3
+// (found by matching the engine's code, tools/xmatch.py).
 typedef struct {
   uint16_t a[10];                  // layer-descriptor arrays, in Super Star Wars order: $0392 $03B2 $03BA
                                    // $03E2 $03EA $03FA $041A $0422 $044A $0452
   uint16_t cache_keys, cache_base; // decompressed-chunk cache: 20 key words, pointer to the 512-byte slots
   uint32_t vis1, vis2;             // visibility compares (cmp #$0100), hooked: A += E
   uint32_t despawn; uint8_t despawn_dp;   // despawn compare, hooked: [dp + n] += E
-  uint32_t spawn[4];               // spawn-window operands: #$FFF0, #$0110, #$FF40, #$01C0
-  uint8_t m7_modes[2];             // game modes whose Mode 7 plane may be widened
+  uint32_t spawn[4];               // spawn-window operands: #$FFF0, #$0110, #$FF40, #$01C0 (0 = not an
+                                   // immediate in this game: Jedi compares the last two with RAM $0B23/$0B25)
+  uint8_t m7_modes[3];             // game modes whose Mode 7 plane may be widened (0 = unused)
   uint32_t bank;                   // WRAM bank offset of the grid, metatile table and chunk cache (0 = $7E, $10000 = $7F)
   uint8_t grid_words;              // grid cells: 0 = bytes ($FF empty), 1 = words (low byte $FF empty; the
                                    // whole word is the chunk-cache key, chunk number = low byte)
   uint8_t prio_xor;                // the cell's priority flag: 0 = OR'd into the tile (SSW), 1 = XOR'd (Empire)
   uint8_t keep43[4][2];            // side-scrolling stages shown 4:3 (a layer the level data can't rebuild)
+  uint8_t fill_lines;              // a line no descriptor can be checked on (open sky: empty cells only) uses
+                                   // the descriptor that drew the layer last frame, instead of the VRAM wrap
+  uint8_t bg3_hud;                 // BG3 is the HUD only on lines 0..bg3_hud-1 and wraps in VRAM below (Jedi
+                                   // draws skies and haze there); 0 = BG3 is kept 4:3 (the HUD, text)
+  uint8_t wrap256;                 // a background no descriptor draws, in a 64-column tilemap: the game only
+                                   // fills what the 4:3 view needs (its second half starts like the first and
+                                   // the rest holds leftovers), so repeat the first 256 pixels
 } WsDef;
 static const WsDef k_ws_ssw = {{0x392, 0x3B2, 0x3BA, 0x3E2, 0x3EA, 0x3FA, 0x41A, 0x422, 0x44A, 0x452}, 0x1925, 0x18FB, 0x80B692, 0x80B69E, 0x80E6BF, 0x34,
                                {0x8190D5, 0x8190DA, 0x819109, 0x819110}, {0x08, 0x0E}, 0, 0, 0, {{0}}};
 static const WsDef k_ws_esb = {{0x630, 0x658, 0x660, 0x688, 0x690, 0x6A0, 0x6C8, 0x6D0, 0x6F8, 0x700}, 0x1E39, 0x1E0F, 0x80A559, 0x80A565, 0x80DF0A, 0x48,
                                {0x819142, 0x819147, 0x81916F, 0x819176}, {0x0E, 0x0E}, 0x10000, 1, 1,
                                {{0x04, 0x15}, {0x04, 0x0D}}};   // battle of Hoth (snowfield), Dagobah dark cave (fog layer)
+static const WsDef k_ws_rotj = {{0x5AB, 0x5D3, 0x5DB, 0x603, 0x60B, 0x61B, 0x643, 0x64B, 0x673, 0x67B}, 0x1C96, 0x1C6C, 0x81CC58, 0x81CC64, 0x80E0F7, 0x53,
+                               {0x81972C, 0x819731, 0, 0}, {0x14, 0x12, 0x0C}, 0x10000, 1, 1, {{0}}, 1, 32, 1};
 static const WsDef* W = &k_ws_ssw;
 static int g_obj_e, g_obj_sw = -1;
 int g_ws_spawn_wide = 0;   // see ws_objects()
@@ -174,6 +185,7 @@ static uint16_t vram_tile(int layer, int lx, int ly) {
 // VRAM? (Fails on lines where mid-frame effects move a layer away from its camera.)
 static int g_trust[4][240];       // per layer and line: descriptor offset that rebuilds it (0, 2, 4, 6), or -1
 static uint32_t g_trust_frame[4][240], g_frame_no;
+static int g_layer_desc[4], g_layer_desc_last[4];   // fill_lines: the descriptor a layer matched this / last frame
 
 // Does streamed descriptor x reproduce this line of BG layer `layer` on the real screen? Sampled
 // across the line; all rebuilt tiles must equal VRAM. (Fails on lines where mid-frame effects move a
@@ -231,18 +243,25 @@ static int line_desc(int layer) {
     if (desc_matches_line(layer, layer * 2, y)) found = layer * 2;
     for (int x = 0; x < 8 && found < 0; x += 2) if (x != layer * 2 && desc_matches_line(layer, x, y)) found = x;
   }
+  if (found >= 0) g_layer_desc[layer] = found;
+  else if (W->fill_lines && g_layer_desc_last[layer] >= 0) found = g_layer_desc_last[layer] | 0x100;   // unchecked line
   g_trust[layer][y] = found;
   return found;
 }
+
+int g_ws_bg3_menu;   // the port's pause menu is in BG3 (main_sdl.c): keep BG3 4:3 while it is up
 
 static int g_kind;   // 1 = side-scrolling stage (mode $04), 2 = Mode 7 stage (modes $08, $0E; the trench run keeps
                      // 4:3 because its cockpit is a wrapping background layer)
 static int ws_tile(void* ctx, int layer, int lx, int ly) {
   (void)ctx; (void)ly;
   if (layer == 2 && g_ws_mask_bg3 && !W->grid_words) return -2;   // Super Star Wars' BG3 is always the HUD: keep it 4:3
+  if (layer == 2 && g_ws_mask_bg3 && W->bg3_hud) return g_ws_bg3_menu || g_s->ppu->curScreenY < W->bg3_hud ? -2 : -1;
   if (g_kind != 1) return layer == 2 && g_ws_mask_bg3 ? -2 : -1;   // Mode 7 stages: other layers wrap in VRAM
   int x = line_desc(layer);
+  if (x < 0 && W->wrap256 && layer < 2 && g_s->ppu->bgLayer[layer].tilemapWider) return vram_tile(layer, lx & 0xff, ly);
   if (x < 0) return layer == 2 && g_ws_mask_bg3 ? -2 : -1;   // HUD/text (BG3 kept 4:3), or not streamed: VRAM wraps
+  x &= 0xff;
   int sx = g_s->ppu->curScreenX, sy = g_s->ppu->curScreenY;
   int camx = r16(D(0x41A) + x), camy = r16(D(0x422) + x);
   int wx = unwrap(lx, 1024, camx + sx);
@@ -256,9 +275,10 @@ static int ws_tile(void* ctx, int layer, int lx, int ly) {
 
 void ws_init(Snes* s, const uint8_t* rom, int romlen) {
   g_s = s; g_rom = rom; g_romlen = romlen;
-  W = !strcmp(g_game->key, "esb") ? &k_ws_esb : &k_ws_ssw;
+  W = !strcmp(g_game->key, "esb") ? &k_ws_esb : !strcmp(g_game->key, "srotj") ? &k_ws_rotj : &k_ws_ssw;
   g_obj_e = 0; g_obj_sw = -1; g_hook_enable = 0;
   memset(g_pc, 0, sizeof g_pc); memset(g_trust_frame, 0, sizeof g_trust_frame);
+  for (int l = 0; l < 4; l++) g_layer_desc[l] = g_layer_desc_last[l] = -1;
   s->ppu->wideBuffer = calloc((256 + 2 * PPU_WIDE_MAX) * 240, 4);
   s->ppu->wideTileHook = ws_tile;
   s->ppu->wideCtx = s;
@@ -302,8 +322,8 @@ static void ws_objects(int e) {
   set_imm16(W->vis2, 0x0100 + 2 * e);
   set_imm16(W->spawn[0], 0xFFF0 - sw);
   set_imm16(W->spawn[1], 0x0110 + sw);
-  set_imm16(W->spawn[2], 0xFF40 - sw);
-  set_imm16(W->spawn[3], 0x01C0 + sw);
+  if (W->spawn[2]) set_imm16(W->spawn[2], 0xFF40 - sw);
+  if (W->spawn[3]) set_imm16(W->spawn[3], 0x01C0 + sw);
   g_recomp_hook = ws_hook;
   g_hook_enable = e > 0;
 }
@@ -314,9 +334,11 @@ int g_ws_mode7 = 1;     // widen the Mode 7 stages too   // widen object visibil
 // stages, mode $04), otherwise render 4:3 inside the wide frame (pillarbox).
 int ws_update(int extra_wanted) {
   g_frame_no++;
+  for (int l = 0; l < 4; l++) { g_layer_desc_last[l] = g_layer_desc[l]; g_layer_desc[l] = -1; }
   uint16_t mode = r16(g_game->r_mode);
   // Mode 7 stages: the plane simply continues past the old edges (the PPU's Mode 7 fetch takes any x)
-  g_kind = (mode == 0x0004 && g_s->ppu->mode != 7) ? 1 : (mode == W->m7_modes[0] || mode == W->m7_modes[1]) && g_ws_mode7 ? 2 : 0;
+  int m7 = mode && (mode == W->m7_modes[0] || mode == W->m7_modes[1] || mode == W->m7_modes[2]);
+  g_kind = (mode == 0x0004 && g_s->ppu->mode != 7) ? 1 : m7 && g_ws_mode7 ? 2 : 0;
   if (g_kind == 1 && W->grid_words) {   // Empire: a screen no layer of which comes from the level data (stage cards, fades): keep it 4:3
     int any = 0;
     for (int l = 0; l < 3 && !any; l++) for (int y = 48; y < 224 && !any; y += 40)
@@ -332,10 +354,10 @@ int ws_update(int extra_wanted) {
   }
   int scene = g_s->ram[g_game->r_scene];
   for (int i = 0; i < 4; i++) if (W->keep43[i][0] && W->keep43[i][0] == mode && W->keep43[i][1] == scene) g_kind = 0;
-  // Super Star Wars: past either end of the level map there is nothing to show (the game never
+  // Super Star Wars and Jedi: past either end of the level map there is nothing to show (the game never
   // scrolls there), so those columns are black, like the edge of the world
   g_s->ppu->wideClipL = -PPU_WIDE_MAX; g_s->ppu->wideClipR = 256 + PPU_WIDE_MAX;
-  if (g_kind == 1 && !W->grid_words) {
+  if (g_kind == 1 && (!W->grid_words || W->fill_lines)) {   // (Jedi too)
     int l = 0, r = 0, any = 0;
     for (int x = 0; x < 6; x += 2) {
       int w = r16(D(0x44A) + x); if (!w) continue;
