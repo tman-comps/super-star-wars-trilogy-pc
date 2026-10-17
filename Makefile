@@ -1,15 +1,15 @@
 # Super Star Wars trilogy - native PC port
 #
-# The repository holds no game code or data. The recompiled game code (gen/, gen_esb/) is generated
-# from YOUR OWN ROMs by `make gen`; everything else here is the port's own code.
+# The repository holds no game code or data. The recompiled game code (gen/, gen_esb/, gen_rotj/) is
+# generated from YOUR OWN ROMs by `make gen`; everything else here is the port's own code.
 #
-#   make gen          generate the game code from roms/ssw.sfc and roms/sesb.sfc (needs Python 3)
+#   make gen          generate the game code from roms/ssw.sfc, roms/sesb.sfc and roms/srotj.sfc (needs Python 3)
 #   make ssw          the trilogy program, Linux (needs SDL2 dev package)
 #   make sdl2         download the SDL2 mingw package for Windows builds (third_party/SDL2-mingw)
 #   make win          ssw.exe + SDL2.dll, cross-compiled with mingw-w64
 #   make launcher     ssw_launcher(.exe): no generated code at all, runs the games on the built-in
 #                     SNES core from the player's ROM (what GitHub Actions builds and releases)
-#   make esb / ssw_solo (and esb.exe)   single-game programs
+#   make esb / ssw_solo / rotj (and esb.exe, rotj.exe)   single-game programs
 #   make romhash      tool that prints a ROM's SHA-1 (see src/rom_check.c)
 
 CC      ?= gcc
@@ -19,11 +19,12 @@ CFLAGS  += -Ithird_party/lakesnes -Isrc -Igen -w
 LAKE    := $(addprefix third_party/lakesnes/,spc.c dsp.c apu.c cpu.c dma.c ppu.c cart.c input.c statehandler.c snes.c snes_other.c)
 GEN     := $(wildcard gen/recomp_*.c)
 GEN_ESB := $(wildcard gen_esb/recomp_*.c)
-COMMON  := src/game.c src/runner.c src/widescreen.c src/msu.c src/achievements.c src/achievements_esb.c src/achievements_game.c src/restore.c src/steam.c src/extras.c src/crashlog.c src/rom_check.c
+GEN_ROTJ := $(wildcard gen_rotj/recomp_*.c)
+COMMON  := src/game.c src/runner.c src/widescreen.c src/msu.c src/achievements.c src/achievements_esb.c src/achievements_rotj.c src/achievements_game.c src/restore.c src/steam.c src/extras.c src/crashlog.c src/rom_check.c
 
 BUILD   := build
 LAKE_O  := $(patsubst %.c,$(BUILD)/%.o,$(LAKE))
-GEN_O   := $(patsubst %.c,$(BUILD)/%.o,$(GEN) $(GEN_ESB))
+GEN_O   := $(patsubst %.c,$(BUILD)/%.o,$(GEN) $(GEN_ESB) $(GEN_ROTJ))
 GEN_ESB_O := $(patsubst %.c,$(BUILD)/%.o,$(GEN_ESB))
 COM_O   := $(patsubst %.c,$(BUILD)/%.o,$(COMMON))
 
@@ -49,19 +50,22 @@ $(BUILD)/src/main_sdl.o: src/main_sdl.c
 	$(CC) $(CFLAGS) `sdl2-config --cflags` -c $< -o $@
 
 clean:
-	rm -rf $(BUILD) build-* ssw ssw_test ssw.exe ssw_launcher ssw_launcher.exe esb esb.exe ssw_solo romhash
+	rm -rf $(BUILD) build-* ssw ssw_test ssw.exe ssw_launcher ssw_launcher.exe esb esb.exe ssw_solo rotj rotj.exe rotj_* romhash
 
 .PHONY: all clean win launcher gen sdl2
 
 # ---- Game code generated from the player's ROMs (never committed)
 PY ?= python3
-gen: gen/recomp_dispatch.c gen_esb/recomp_dispatch.c
+gen: gen/recomp_dispatch.c gen_esb/recomp_dispatch.c gen_rotj/recomp_dispatch.c
 gen/recomp_dispatch.c: roms/ssw.sfc analysis/ssw/map.json analysis/ssw/hooks.txt tools/recomp.py
 	@mkdir -p gen
 	$(PY) -I tools/recomp.py roms/ssw.sfc analysis/ssw/map.json third_party/lakesnes/cpu.c gen "" analysis/ssw/hooks.txt
 gen_esb/recomp_dispatch.c: roms/sesb.sfc analysis/esb/map.json analysis/esb/hooks.txt tools/recomp.py
 	@mkdir -p gen_esb
 	$(PY) -I tools/recomp.py roms/sesb.sfc analysis/esb/map.json third_party/lakesnes/cpu.c gen_esb esb_ analysis/esb/hooks.txt
+gen_rotj/recomp_dispatch.c: roms/srotj.sfc analysis/rotj/map.json analysis/rotj/hooks.txt tools/recomp.py
+	@mkdir -p gen_rotj
+	$(PY) -I tools/recomp.py roms/srotj.sfc analysis/rotj/map.json third_party/lakesnes/cpu.c gen_rotj rotj_ analysis/rotj/hooks.txt
 roms/%.sfc:
 	@echo "Missing $@ -- copy your own dump of the cartridge there (see README.md)"; exit 1
 
@@ -82,7 +86,7 @@ SDLWIN  := third_party/SDL2-mingw/x86_64-w64-mingw32
 WBUILD  := build-win
 WCFLAGS := -O2 -Ithird_party/lakesnes -Isrc -Igen -w -I$(SDLWIN)/include/SDL2 -Dmain=SDL_main
 W_LAKE  := $(patsubst %.c,$(WBUILD)/%.o,$(LAKE))
-W_GEN   := $(patsubst %.c,$(WBUILD)/%.o,$(GEN) $(GEN_ESB))
+W_GEN   := $(patsubst %.c,$(WBUILD)/%.o,$(GEN) $(GEN_ESB) $(GEN_ROTJ))
 W_COM   := $(patsubst %.c,$(WBUILD)/%.o,$(COMMON) src/main_sdl.c)
 
 $(WBUILD)/gen/%.o: gen/%.c gen/cpu_helpers.inc src/recomp_rt.h
@@ -92,6 +96,10 @@ $(WBUILD)/gen/%.o: gen/%.c gen/cpu_helpers.inc src/recomp_rt.h
 $(WBUILD)/gen_esb/%.o: gen_esb/%.c gen_esb/cpu_helpers.inc src/recomp_rt.h
 	@mkdir -p $(dir $@)
 	$(WINCC) $(filter-out -O2,$(WCFLAGS)) -Igen_esb -O1 -c $< -o $@
+
+$(WBUILD)/gen_rotj/%.o: gen_rotj/%.c gen_rotj/cpu_helpers.inc src/recomp_rt.h
+	@mkdir -p $(dir $@)
+	$(WINCC) $(filter-out -O2,$(WCFLAGS)) -Igen_rotj -O1 -c $< -o $@
 
 $(WBUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -201,25 +209,52 @@ $(BUILD)/gen_esb/%.o: gen_esb/%.c gen_esb/cpu_helpers.inc src/recomp_rt.h
 esb_test: $(LAKE_O) $(GEN_O) $(COM_O) $(BUILD)/src/test_esb.o
 	$(CC) -o $@ $^ -lm -ldl
 
+# ---- Super Return of the Jedi
+$(BUILD)/gen_rotj/%.o: gen_rotj/%.c gen_rotj/cpu_helpers.inc src/recomp_rt.h
+	@mkdir -p $(dir $@)
+	$(CC) $(filter-out -O2,$(CFLAGS)) -Igen_rotj -O1 -c $< -o $@
+
+rotj_test: $(LAKE_O) $(GEN_O) $(COM_O) $(BUILD)/src/test_rotj.o
+	$(CC) -o $@ $^ -lm -ldl
+
+rotj_lockstep: $(LAKE_O) $(GEN_O) $(COM_O) $(BUILD)/src/lockstep_rotj.o
+	$(CC) -o $@ $^ -lm -ldl
+
 # ---- Standalone single-game programs (same front-end, only one game's code linked)
-#   make esb / esb.exe        Super Empire Strikes Back only (-DNO_SSW)
-#   make ssw_solo / ssw_solo.exe   Super Star Wars only (-DNO_ESB)
+#   make esb / esb.exe        Super Empire Strikes Back only (-DNO_SSW -DNO_ROTJ)
+#   make ssw_solo / ssw_solo.exe   Super Star Wars only (-DNO_ESB -DNO_ROTJ)
+#   make rotj / rotj.exe      Super Return of the Jedi only (-DNO_SSW -DNO_ESB)
 EBUILD := build-esb
 $(EBUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -DNO_SSW `sdl2-config --cflags` -c $< -o $@
+	$(CC) $(CFLAGS) -DNO_SSW -DNO_ROTJ `sdl2-config --cflags` -c $< -o $@
 esb: $(LAKE_O) $(GEN_ESB_O) $(patsubst %.c,$(EBUILD)/%.o,$(COMMON) src/main_sdl.c)
 	$(CC) -o $@ $^ `sdl2-config --libs` -lm -ldl
 SBUILD := build-ssw-solo
 $(SBUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -DNO_ESB `sdl2-config --cflags` -c $< -o $@
+	$(CC) $(CFLAGS) -DNO_ESB -DNO_ROTJ `sdl2-config --cflags` -c $< -o $@
 ssw_solo: $(LAKE_O) $(patsubst %.c,$(BUILD)/%.o,$(GEN)) $(patsubst %.c,$(SBUILD)/%.o,$(COMMON) src/main_sdl.c)
 	$(CC) -o $@ $^ `sdl2-config --libs` -lm -ldl
 
 WEBUILD := build-win-esb
 $(WEBUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(WINCC) $(WCFLAGS) -DNO_SSW -c $< -o $@
+	$(WINCC) $(WCFLAGS) -DNO_SSW -DNO_ROTJ -c $< -o $@
 esb.exe: $(W_LAKE) $(patsubst %.c,$(WBUILD)/%.o,$(GEN_ESB)) $(patsubst %.c,$(WEBUILD)/%.o,$(COMMON) src/main_sdl.c)
+	$(WINCC) -o $@ $^ -L$(SDLWIN)/lib -lmingw32 -lSDL2main -lSDL2 -mwindows -static-libgcc
+
+GEN_ROTJ_O := $(patsubst %.c,$(BUILD)/%.o,$(GEN_ROTJ))
+RBUILD := build-rotj
+$(RBUILD)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DNO_SSW -DNO_ESB `sdl2-config --cflags` -c $< -o $@
+rotj: $(LAKE_O) $(GEN_ROTJ_O) $(patsubst %.c,$(RBUILD)/%.o,$(COMMON) src/main_sdl.c)
+	$(CC) -o $@ $^ `sdl2-config --libs` -lm -ldl
+
+WRBUILD := build-win-rotj
+$(WRBUILD)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(WINCC) $(WCFLAGS) -DNO_SSW -DNO_ESB -c $< -o $@
+rotj.exe: $(W_LAKE) $(patsubst %.c,$(WBUILD)/%.o,$(GEN_ROTJ)) $(patsubst %.c,$(WRBUILD)/%.o,$(COMMON) src/main_sdl.c)
 	$(WINCC) -o $@ $^ -L$(SDLWIN)/lib -lmingw32 -lSDL2main -lSDL2 -mwindows -static-libgcc

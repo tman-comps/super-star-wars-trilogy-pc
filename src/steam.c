@@ -3,8 +3,9 @@
 // ID (launched from Steam, or steam_appid.txt next to the program), achievements are mirrored to
 // Steam through the Steamworks flat C API. Otherwise everything stays local.
 //
-// Steam achievement API names are ACH_00 .. ACH_15 (Super Star Wars, src/achievements.c) and
-// ACH_16 .. ACH_31 (Super Empire Strikes Back, src/achievements_esb.c)
+// Steam achievement API names are ACH_00 .. ACH_15 (Super Star Wars, src/achievements.c),
+// ACH_16 .. ACH_31 (Super Empire Strikes Back, src/achievements_esb.c) and ACH_32 .. ACH_47 (Super Return of
+// the Jedi, src/achievements_rotj.c)
 // (see steam/achievements.txt for names and descriptions to enter in Steamworks).
 #include <stdio.h>
 #include <string.h>

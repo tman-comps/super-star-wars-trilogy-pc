@@ -1,0 +1,1 @@
+# manual tracer hints (entry/table/ltable/notable/data/label), see tools/trace.py

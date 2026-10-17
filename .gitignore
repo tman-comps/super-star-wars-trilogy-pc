@@ -69,6 +69,10 @@ disasm/
 bank*.s
 *.cdl
 coverage*/
+# Screenshots and pictures the test tools write (they show the game)
+*.ppm
+*.png
+
 # The game font the menus capture from your ROM, MSU-1 audio packs
 *.pcm
 *.msu
@@ -96,6 +100,8 @@ build-*/
 /ssw_test
 /ssw_*
 /esb_*
+/rotj
+/rotj_*
 third_party/SDL2-mingw/
 
 # Python caches

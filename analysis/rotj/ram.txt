@@ -1,0 +1,16 @@
+# WRAM symbols: <address> <name>   (Super Return of the Jedi, USA Rev 1)
+# Same engine as Empire, most variables moved by a few bytes (Empire's address in brackets).
+010C PadMaskA                # [ ] button masks read by the input code (not the debug flag as in Empire)
+0110 DebugFlag               # [010C] word, | $0112: developer features (controller 2 L+R menu, controller 1 B+Start stage skip)
+0114 Cheats                  # [0110] title codes: $20 infinite thermal detonators (B X B X B X B B B Y), $40 all Force powers, $80 free camera
+01B2 Lives                   # [01AC] 99 from the title code X X B A Y
+01B4 MaxHP                   # [01AE]
+01BE GameMode                # [01B6] 04 side-scrolling, 06 cutscene/title, 08 stage card, 0A Death Star reactor run,
+                             #        0C Falcon space battle, 0E opening crawl, 12 speeder bikes, 14 landspeeder
+01C0 SceneID                 # [01B8]
+01C2 DebugMenuBusy           # [01BA] stage skip ignored while set
+04DF Pad1Pressed             # controller 1, new presses this frame
+04E1 Pad2Held                # controller 2
+0C58 ObjHP                   # [0CF6] 2 bytes per object slot, slot 0 = player
+1130 ObjX                    # [11CE] slot 0 = player
+11A8 ObjY                    # [1246]

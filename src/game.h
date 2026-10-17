@@ -42,7 +42,7 @@ typedef struct GameDef {
   // title screen and GAME OPTION MENU (BG3 text; the port adds PC SETTINGS and ACHIEVEMENTS to the option menu)
   uint16_t tm_cursor;                // WRAM word: the selected item (title menu and option menu)
   uint16_t tm_window[2];             // WRAM per-line window tables (2 bytes a line) that darken the boxes
-  uint8_t play_modes[4];             // GameMode values that are gameplay (0 = unused)
+  uint8_t play_modes[6];             // GameMode values that are gameplay (0 = unused)
   const uint8_t (*stages)[2];        // play order (mode, scene) for continue / level numbers
   const char* const* stage_names;
   int nstages;
@@ -54,9 +54,12 @@ typedef struct GameDef {
   uint16_t r_step_flag;              // WRAM byte the main loop sets when a step's sprites are ready and the NMI
                                      // clears after uploading them; the Mode 7 stages wait on it (0 = unknown)
   const uint8_t (*paces)[3];         // {mode, scene, frames}: those stages' usual frames per step, 0-ended
+  uint16_t bg3_map;                  // VRAM word address of the title / option screen's BG3 tilemap
+  uint8_t clear_pad;                 // the developer stage skip: controller (1 or 2) and the buttons pressed
+  uint16_t clear_buttons;            // on it, with the developer flag on (bits in LakeSnes order: B=0 ... Start=3)
 } GameDef;
 
-extern const GameDef g_ssw, g_esb;
+extern const GameDef g_ssw, g_esb, g_rotj;
 extern const GameDef* const g_all_games[];   // NULL-terminated, in trilogy order
 extern const GameDef* g_game;                // the one running
 
