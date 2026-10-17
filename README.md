@@ -8,7 +8,7 @@ A native PC version of the SNES **Super Star Wars** games, made by statically re
 | Super Star Wars: The Empire Strikes Back (1993) | Playable start to finish, all PC features |
 | Super Star Wars: Return of the Jedi (1994) | Playable start to finish, all PC features (new: not playtested yet) |
 
-All three games run in one program as a trilogy (after one game's ending the next one starts), and each can also be built on its own.
+All three games run in one program as a trilogy: after one game's ending the next one starts by itself, skipping its logos and title and going straight to its opening crawl. Each can also be built on its own.
 
 > ⚠️ **This repository contains no game code or data.** You need your own dumps of the original cartridges. No ROMs, graphics, music, levels or game code are included or will be provided. Please don't ask.
 
